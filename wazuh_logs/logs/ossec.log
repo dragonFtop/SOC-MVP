@@ -1,0 +1,113 @@
+2026/05/13 15:15:14 wazuh-modulesd:router: INFO: Loaded router module.
+2026/05/13 15:15:14 wazuh-modulesd:content_manager: INFO: Loaded content_manager module.
+2026/05/13 15:15:14 wazuh-modulesd:inventory-harvester: INFO: Loaded Inventory harvester module.
+2026/05/13 15:15:18 wazuh-csyslogd: INFO: Remote syslog server not configured. Clean exit.
+2026/05/13 15:15:18 wazuh-dbd: INFO: Database not configured. Clean exit.
+2026/05/13 15:15:18 wazuh-integratord: INFO: Remote integrations not configured. Clean exit.
+2026/05/13 15:15:18 wazuh-agentlessd: INFO: Not configured. Exiting.
+2026/05/13 15:15:18 wazuh-authd: INFO: Started (pid: 529).
+2026/05/13 15:15:18 wazuh-authd: INFO: Accepting connections on port 1515. No password required.
+2026/05/13 15:15:18 wazuh-authd: INFO: Setting network timeout to 1.000000 sec.
+2026/05/13 15:15:19 wazuh-db: INFO: Started (pid: 543).
+2026/05/13 15:15:19 :router: INFO: Registering GET endpoint: /v1/agents/ids
+2026/05/13 15:15:19 :router: INFO: Registering GET endpoint: /v1/agents/ids/groups/:name
+2026/05/13 15:15:19 :router: INFO: Registering GET endpoint: /v1/agents/ids/groups
+2026/05/13 15:15:19 :router: INFO: Registering GET endpoint: /v1/agents/:agent_id/groups
+2026/05/13 15:15:19 :router: INFO: Registering POST endpoint: /v1/agents/summary
+2026/05/13 15:15:19 :router: INFO: Registering GET endpoint: /v1/agents/sync
+2026/05/13 15:15:19 :router: INFO: Registering POST endpoint: /v1/agents/sync
+2026/05/13 15:15:19 :router: INFO: Registering POST endpoint: /v1/agents/restartinfo
+2026/05/13 15:15:19 :router: INFO: API started successfully
+2026/05/13 15:15:19 wazuh-db: INFO: Created Global database backup "backup/db/global.db-backup-2026-05-13-15:15:19.gz"
+2026/05/13 15:15:20 wazuh-execd: INFO: Started (pid: 590).
+2026/05/13 15:15:22 wazuh-analysisd: INFO: Total rules enabled: '7067'
+2026/05/13 15:15:22 wazuh-analysisd: INFO: Started (pid: 604).
+2026/05/13 15:15:22 wazuh-syscheckd: INFO: Started (pid: 619).
+2026/05/13 15:15:22 wazuh-syscheckd: INFO: (6003): Monitoring path: '/bin', with options 'size | permissions | owner | group | mtime | inode | hash_md5 | hash_sha1 | hash_sha256 | scheduled'.
+2026/05/13 15:15:22 wazuh-syscheckd: INFO: (6003): Monitoring path: '/boot', with options 'size | permissions | owner | group | mtime | inode | hash_md5 | hash_sha1 | hash_sha256 | scheduled'.
+2026/05/13 15:15:22 wazuh-syscheckd: INFO: (6003): Monitoring path: '/etc', with options 'size | permissions | owner | group | mtime | inode | hash_md5 | hash_sha1 | hash_sha256 | scheduled'.
+2026/05/13 15:15:22 wazuh-syscheckd: INFO: (6003): Monitoring path: '/sbin', with options 'size | permissions | owner | group | mtime | inode | hash_md5 | hash_sha1 | hash_sha256 | scheduled'.
+2026/05/13 15:15:22 wazuh-syscheckd: INFO: (6003): Monitoring path: '/usr/bin', with options 'size | permissions | owner | group | mtime | inode | hash_md5 | hash_sha1 | hash_sha256 | scheduled'.
+2026/05/13 15:15:22 wazuh-syscheckd: INFO: (6003): Monitoring path: '/usr/sbin', with options 'size | permissions | owner | group | mtime | inode | hash_md5 | hash_sha1 | hash_sha256 | scheduled'.
+2026/05/13 15:15:22 wazuh-syscheckd: INFO: (6206): Ignore 'file' entry '/etc/mtab'
+2026/05/13 15:15:22 wazuh-syscheckd: INFO: (6206): Ignore 'file' entry '/etc/hosts.deny'
+2026/05/13 15:15:22 wazuh-syscheckd: INFO: (6206): Ignore 'file' entry '/etc/mail/statistics'
+2026/05/13 15:15:22 wazuh-syscheckd: INFO: (6206): Ignore 'file' entry '/etc/random-seed'
+2026/05/13 15:15:22 wazuh-syscheckd: INFO: (6206): Ignore 'file' entry '/etc/random.seed'
+2026/05/13 15:15:22 wazuh-syscheckd: INFO: (6206): Ignore 'file' entry '/etc/adjtime'
+2026/05/13 15:15:22 wazuh-syscheckd: INFO: (6206): Ignore 'file' entry '/etc/httpd/logs'
+2026/05/13 15:15:22 wazuh-syscheckd: INFO: (6206): Ignore 'file' entry '/etc/utmpx'
+2026/05/13 15:15:22 wazuh-syscheckd: INFO: (6206): Ignore 'file' entry '/etc/wtmpx'
+2026/05/13 15:15:22 wazuh-syscheckd: INFO: (6206): Ignore 'file' entry '/etc/cups/certs'
+2026/05/13 15:15:22 wazuh-syscheckd: INFO: (6206): Ignore 'file' entry '/etc/dumpdates'
+2026/05/13 15:15:22 wazuh-syscheckd: INFO: (6206): Ignore 'file' entry '/etc/svc/volatile'
+2026/05/13 15:15:22 wazuh-syscheckd: INFO: (6207): Ignore 'file' sregex '.log$|.swp$'
+2026/05/13 15:15:22 wazuh-syscheckd: INFO: (6004): No diff for file: '/etc/ssl/private.key'
+2026/05/13 15:15:22 wazuh-syscheckd: INFO: (6000): Starting daemon...
+2026/05/13 15:15:22 wazuh-syscheckd: INFO: (6010): File integrity monitoring scan frequency: 43200 seconds
+2026/05/13 15:15:22 wazuh-syscheckd: INFO: (6008): File integrity monitoring scan started.
+2026/05/13 15:15:22 rootcheck: INFO: Starting rootcheck scan.
+2026/05/13 15:15:22 wazuh-analysisd: INFO: EPS limit disabled
+2026/05/13 15:15:22 wazuh-analysisd: INFO: (7200): Logtest started
+2026/05/13 15:15:23 wazuh-remoted: INFO: Started (pid: 721). Listening on port 1514/TCP (secure).
+2026/05/13 15:15:23 wazuh-syscheckd: INFO: (6009): File integrity monitoring scan ended.
+2026/05/13 15:15:23 wazuh-syscheckd: INFO: FIM sync module started.
+2026/05/13 15:15:23 wazuh-remoted: INFO: (1410): Reading authentication keys file.
+2026/05/13 15:15:24 wazuh-logcollector: INFO: Monitoring output of command(360): df -P
+2026/05/13 15:15:24 wazuh-logcollector: INFO: Monitoring full output of command(360): netstat -tulpn | sed 's/\([[:alnum:]]\+\)\ \+[[:digit:]]\+\ \+[[:digit:]]\+\ \+\(.*\):\([[:digit:]]*\)\ \+\([0-9\.\:\*]\+\).\+\ \([[:digit:]]*\/[[:alnum:]\-]*\).*/\1 \2 == \3 == \4 \5/' | sort -k 4 -g | sed 's/ == \(.*\) ==/:\1/' | sed 1,2d
+2026/05/13 15:15:24 wazuh-logcollector: INFO: Monitoring full output of command(360): last -n 20
+2026/05/13 15:15:24 wazuh-logcollector: INFO: (1950): Analyzing file: '/var/ossec/logs/active-responses.log'.
+2026/05/13 15:15:24 wazuh-logcollector: INFO: Started (pid: 791).
+2026/05/13 15:15:25 wazuh-monitord: INFO: Started (pid: 843).
+2026/05/13 15:15:26 wazuh-modulesd:router: INFO: Loaded router module.
+2026/05/13 15:15:26 wazuh-modulesd:content_manager: INFO: Loaded content_manager module.
+2026/05/13 15:15:26 wazuh-modulesd:inventory-harvester: INFO: Loaded Inventory harvester module.
+2026/05/13 15:15:26 wazuh-modulesd: INFO: Started (pid: 902).
+2026/05/13 15:15:26 wazuh-modulesd:agent-upgrade: INFO: (8153): Module Agent Upgrade started.
+2026/05/13 15:15:26 wazuh-modulesd:router: INFO: Starting router module.
+2026/05/13 15:15:26 wazuh-modulesd:inventory-harvester: INFO: Starting inventory_harvester module.
+2026/05/13 15:15:26 wazuh-modulesd:task-manager: INFO: (8200): Module Task Manager started.
+2026/05/13 15:15:26 sca: INFO: Module started.
+2026/05/13 15:15:26 sca: INFO: Loaded policy '/var/ossec/ruleset/sca/cis_amazon_linux_2023.yml'
+2026/05/13 15:15:26 wazuh-modulesd:content_manager: INFO: Starting content_manager module.
+2026/05/13 15:15:26 wazuh-modulesd:ciscat: INFO: Module disabled. Exiting...
+2026/05/13 15:15:26 wazuh-modulesd:osquery: INFO: Module disabled. Exiting...
+2026/05/13 15:15:26 wazuh-modulesd:control: INFO: Starting control thread.
+2026/05/13 15:15:26 wazuh-modulesd:download: INFO: Module started.
+2026/05/13 15:15:26 wazuh-modulesd:database: INFO: Module started.
+2026/05/13 15:15:26 wazuh-modulesd:vulnerability-scanner: INFO: Starting vulnerability_scanner module.
+2026/05/13 15:15:26 sca: INFO: Starting Security Configuration Assessment scan.
+2026/05/13 15:15:26 sca: INFO: Starting evaluation of policy: '/var/ossec/ruleset/sca/cis_amazon_linux_2023.yml'
+2026/05/13 15:15:26 wazuh-modulesd:syscollector: INFO: Module started.
+2026/05/13 15:15:26 wazuh-modulesd:syscollector: INFO: Starting evaluation.
+2026/05/13 15:15:27 indexer-connector: WARNING: No username and password found in the keystore, using default values.
+2026/05/13 15:15:27 indexer-connector: WARNING: IndexerConnector initialization failed for index 'wazuh-states-inventory-packages-0f98319a2063', retrying until the connection is successful.
+2026/05/13 15:15:27 indexer-connector: WARNING: IndexerConnector initialization failed for index 'wazuh-states-vulnerabilities-0f98319a2063', retrying until the connection is successful.
+2026/05/13 15:15:27 wazuh-modulesd:vulnerability-scanner: INFO: Starting database file decompression.
+2026/05/13 15:15:27 indexer-connector: WARNING: IndexerConnector initialization failed for index 'wazuh-states-inventory-system-0f98319a2063', retrying until the connection is successful.
+2026/05/13 15:15:27 indexer-connector: WARNING: IndexerConnector initialization failed for index 'wazuh-states-inventory-processes-0f98319a2063', retrying until the connection is successful.
+2026/05/13 15:15:27 indexer-connector: WARNING: IndexerConnector initialization failed for index 'wazuh-states-inventory-ports-0f98319a2063', retrying until the connection is successful.
+2026/05/13 15:15:27 indexer-connector: WARNING: IndexerConnector initialization failed for index 'wazuh-states-inventory-hotfixes-0f98319a2063', retrying until the connection is successful.
+2026/05/13 15:15:27 indexer-connector: WARNING: IndexerConnector initialization failed for index 'wazuh-states-inventory-hardware-0f98319a2063', retrying until the connection is successful.
+2026/05/13 15:15:27 indexer-connector: WARNING: IndexerConnector initialization failed for index 'wazuh-states-inventory-protocols-0f98319a2063', retrying until the connection is successful.
+2026/05/13 15:15:27 wazuh-modulesd:syscollector: INFO: Evaluation finished.
+2026/05/13 15:15:27 indexer-connector: WARNING: IndexerConnector initialization failed for index 'wazuh-states-inventory-interfaces-0f98319a2063', retrying until the connection is successful.
+2026/05/13 15:15:27 indexer-connector: WARNING: IndexerConnector initialization failed for index 'wazuh-states-inventory-networks-0f98319a2063', retrying until the connection is successful.
+2026/05/13 15:15:27 indexer-connector: WARNING: IndexerConnector initialization failed for index 'wazuh-states-inventory-users-0f98319a2063', retrying until the connection is successful.
+2026/05/13 15:15:27 indexer-connector: WARNING: IndexerConnector initialization failed for index 'wazuh-states-inventory-groups-0f98319a2063', retrying until the connection is successful.
+2026/05/13 15:15:27 indexer-connector: WARNING: IndexerConnector initialization failed for index 'wazuh-states-inventory-browser-extensions-0f98319a2063', retrying until the connection is successful.
+2026/05/13 15:15:28 logger-helper: INFO: InventoryHarvesterFacade module started.
+2026/05/13 15:15:28 indexer-connector: WARNING: IndexerConnector initialization failed for index 'wazuh-states-inventory-services-0f98319a2063', retrying until the connection is successful.
+2026/05/13 15:15:32 wazuh-remoted: WARNING: (1408): Invalid ID 001 for the source ip: '172.18.0.1' (name 'unknown').
+2026/05/13 15:15:34 sca: INFO: Evaluation finished for policy '/var/ossec/ruleset/sca/cis_amazon_linux_2023.yml'
+2026/05/13 15:15:34 sca: INFO: Security Configuration Assessment scan finished. Duration: 8 seconds.
+2026/05/13 15:15:42 wazuh-remoted: WARNING: (1408): Invalid ID 001 for the source ip: '172.18.0.1' (name 'unknown').
+2026/05/13 15:15:42 wazuh-authd: INFO: New connection from 172.18.0.1
+2026/05/13 15:15:42 wazuh-authd: INFO: Received request for a new agent (37vwmu3rudbyc0v) from: 172.18.0.1
+2026/05/13 15:15:42 wazuh-authd: INFO: Agent key generated for '37vwmu3rudbyc0v' (requested by any)
+2026/05/13 15:15:43 wazuh-remoted: INFO: (1409): Authentication file changed. Updating.
+2026/05/13 15:15:43 wazuh-remoted: INFO: (1410): Reading authentication keys file.
+2026/05/13 15:15:43 wazuh-syscheckd: INFO: netstat not available. Skipping port check.
+2026/05/13 15:15:48 rootcheck: INFO: Ending rootcheck scan.
+2026/05/13 15:16:45 wazuh-modulesd:vulnerability-scanner: INFO: Database decompression finished.
+2026/05/13 15:16:45 wazuh-modulesd:vulnerability-scanner: INFO: Vulnerability scanner module started.

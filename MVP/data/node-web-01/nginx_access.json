@@ -1,0 +1,3 @@
+{"timestamp":"2025-12-20T08:00:01Z","remote_addr":"192.168.1.50","request_uri":"/admin","status":403}
+{"timestamp":"2025-12-20T08:00:03Z","remote_addr":"192.168.1.50","request_uri":"/login.php","status":200}
+{"timestamp":"2025-12-20T08:00:05Z","remote_addr":"192.168.1.50","request_uri":"/sqlmap?user=admin' OR 1=1--","status":500}
