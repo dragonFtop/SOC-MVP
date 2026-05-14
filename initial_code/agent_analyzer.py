@@ -1,14 +1,11 @@
 import json
 import os
+from datetime import datetime
 
-def analyze_event(timestamp=None):
-        
-    evidence_path = f"outputs/{timestamp}/evidence.json"
-    readiness_path = f"outputs/{timestamp}/readiness.json"
-    
-    with open(evidence_path, "r", encoding="utf-8") as f:
+def analyze_event():
+    with open("evidence.json", "r", encoding="utf-8") as f:
         evidence = json.load(f)
-    with open(readiness_path, "r", encoding="utf-8") as f:
+    with open("readiness.json", "r", encoding="utf-8") as f:
         readiness = json.load(f)
 
     if readiness["score"] < 40:
@@ -38,14 +35,17 @@ def analyze_event(timestamp=None):
         "readiness_score": readiness["score"]
     }
 
-    output_dir = f"outputs/{timestamp}"
-    os.makedirs(output_dir, exist_ok=True)
+    # 创建 outputs 目录（如果不存在）
+    os.makedirs("outputs", exist_ok=True)
     
-    filepath = f"{output_dir}/agent_result.json"
-    with open(filepath, "w", encoding="utf-8") as f:
+    # 生成带时间戳的文件名
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"outputs/agent_result_{timestamp}.json"
+    
+    with open(filename, "w", encoding="utf-8") as f:
         json.dump(result, f, indent=2, ensure_ascii=False)
 
-    print(f"✅ Agent 研判完成，已生成 {filepath}")
+    print(f"✅ Agent 研判完成，已生成 {filename}")
     return result
 
 if __name__ == "__main__":

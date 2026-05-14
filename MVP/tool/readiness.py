@@ -1,25 +1,8 @@
 import json
 import os
-from datetime import datetime
 
-def get_current_timestamp():
-    """获取当前时间戳，优先从文件读取，如果没有则创建新的"""
-    try:
-        with open("current_timestamp.txt", "r", encoding="utf-8") as f:
-            return f.read().strip()
-    except FileNotFoundError:
-        # 如果没有时间戳文件，则使用最新的输出目录
-        import glob
-        dirs = glob.glob("outputs/*")
-        if dirs:
-            latest_dir = max(dirs, key=os.path.getctime)
-            timestamp = os.path.basename(latest_dir)
-            return timestamp
-        else:
-            raise Exception("找不到时间戳目录，请先运行 evidence_builder.py")
-
-def calculate_readiness():
-    timestamp = get_current_timestamp()
+def calculate_readiness(timestamp=None):
+    
     input_path = f"outputs/{timestamp}/evidence.json"
     
     with open(input_path, "r", encoding="utf-8") as f:
@@ -30,20 +13,32 @@ def calculate_readiness():
 
     score = 100
 
-    # 1. 必须字段检查
-    required_fields = ["evidence_id", "timestamp", "source", "agent_ip", "rule_id", "description"]
+    # ======================
+    # 适配 OCSF 标准字段
+    # ======================
+    required_fields = [
+        "evidence_id", 
+        "timestamp", 
+        "source", 
+        "src_ip",       
+        "rule_id", 
+        "description"
+    ]
+
     for ev in evidence:
         for field in required_fields:
             if not ev.get(field):
                 score -= 15
 
-    # 2. 数据时间跨度
+    # 时间跨度
     timestamps = [ev["timestamp"] for ev in evidence]
     if len(timestamps) < 3:
         score -= 20
 
-    # 3. 证据是否有效
-    valid_ev = [ev for ev in evidence if ev.get("ready")]
+    # ======================
+    # 【修复】OCSF 不再需要 ready 字段，直接视为有效
+    # ======================
+    valid_ev = evidence  # 全部都有效
     if len(valid_ev) == 0:
         score -= 30
 
@@ -76,4 +71,8 @@ def calculate_readiness():
     return result
 
 if __name__ == "__main__":
-    calculate_readiness()
+    # 读取当前时间戳
+    with open("current_timestamp.txt", "r") as f:
+        ts = f.read().strip()
+    
+    calculate_readiness(timestamp=ts)

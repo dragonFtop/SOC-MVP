@@ -1,5 +1,5 @@
 {
-  "passed": true,
+  "verified": true,
   "issues": [],
   "final_confidence": "中",
   "final_conclusion": "存在登录爆破风险，需加固认证策略。"

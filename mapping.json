@@ -1,0 +1,15 @@
+{
+  "mappings": {
+    "properties": {
+      "timestamp":      { "type": "date" },
+      "severity":       { "type": "integer" },
+      "rule_id":        { "type": "keyword" },
+      "description":    { "type": "text" },
+      "src_ip":         { "type": "ip" },
+      "hostname":       { "type": "keyword" },
+      "evidence_id":    { "type": "keyword" },
+      "source":         { "type": "keyword" },
+      "raw_log":        { "type": "text" }
+    }
+  }
+}

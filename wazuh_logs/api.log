@@ -1,10 +1,7 @@
-2026/05/13 15:15:17 INFO: HTTPS is enabled but cannot find the private key and/or certificate. Attempting to generate them
-2026/05/13 15:15:17 INFO: Generated private key file in WAZUH_PATH/api/configuration/ssl/server.key
-2026/05/13 15:15:17 INFO: Generated certificate file in WAZUH_PATH/api/configuration/ssl/server.crt
-2026/05/13 15:15:17 INFO: Checking RBAC database integrity...
-2026/05/13 15:15:17 INFO: RBAC database not found. Initializing
-2026/05/13 15:15:20 INFO: /var/ossec/api/configuration/security/rbac.db database created successfully
-2026/05/13 15:15:20 INFO: RBAC database integrity check finished successfully
-2026/05/13 15:15:25 INFO: Listening on ['0.0.0.0', '::']:55000.
-2026/05/13 15:15:25 INFO: Populating installation UID...
-2026/05/13 15:15:25 INFO: Getting updates information...
+2026/05/14 07:12:43 INFO: HTTPS is enabled but cannot find the private key and/or certificate. Attempting to generate them
+2026/05/14 07:12:43 INFO: Generated private key file in WAZUH_PATH/api/configuration/ssl/server.key
+2026/05/14 07:12:43 INFO: Generated certificate file in WAZUH_PATH/api/configuration/ssl/server.crt
+2026/05/14 07:12:43 INFO: Checking RBAC database integrity...
+2026/05/14 07:12:43 INFO: RBAC database not found. Initializing
+2026/05/14 07:12:46 INFO: /var/ossec/api/configuration/security/rbac.db database created successfully
+2026/05/14 07:12:46 INFO: RBAC database integrity check finished successfully
