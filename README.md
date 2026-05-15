@@ -1,255 +1,294 @@
 # AI-SOC 智能安全运营中心
 
-AI-SOC (Artificial Intelligence Security Operations Center) 是一个集成化的安全事件分析平台，结合了现代安全工具链和人工智能技术，用于自动化分析安全事件、收集证据并生成响应建议。
+AI-SOC (Artificial Intelligence Security Operations Center) 是一个基于**数据编织 (Data Fabric)** 架构的安全事件自动化研判平台。
 
-## 项目概述
+核心理念：**物理分布、逻辑统一、按需取证、可信研判**。
 
-本项目旨在构建一个自动化的安全事件分析系统，能够从多个数据源收集安全事件，对威胁进行分析，并生成相应的响应建议。系统主要由以下几个组件构成：
+## 架构概览
 
-- **OpenSearch**: 用于存储和检索安全日志数据
-- **Wazuh**: 作为SIEM解决方案，提供安全监控和告警功能
-- **Wazuh Agent**: 作为Wazuh代理，收集系统日志和告警信息
-- **AI Agent**: 自定义Python脚本，实现安全事件的智能化分析
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    终端 2: Client (边缘侧)                    │
+│                                                             │
+│  Wazuh Agent ──► Wazuh Manager ──► alerts.json (NDJSON)     │
+│                                       │                     │
+│                              SignalWatcher (实时监控)        │
+│                                       │                     │
+│                              DuckDB Sidecar (按需查询)       │
+│                                       │                     │
+└───────────────────────────────────────┼─────────────────────┘
+                                        │
+                                 NATS JetStream
+                                        │
+┌───────────────────────────────────────┼─────────────────────┐
+│                    终端 1: Server (中心侧)                    │
+│                                       │                     │
+│                              Signal Listener (信令监听)      │
+│                                       │                     │
+│                              Query Gateway (FastAPI :8000)   │
+│                                       │                     │
+│                              Agent Team (LLM 多Agent研判)    │
+│                                       │                     │
+│                              Verifier (复核校验)             │
+│                                       │                     │
+│                              Dashboard (Streamlit :8501)     │
+│                                                             │
+│  存储层: OpenSearch + DuckDB                                 │
+└─────────────────────────────────────────────────────────────┘
+```
 
-## 架构组成
+### 实时数据流
 
-### 核心服务
-
-1. **OpenSearch 3.5.0**
-   - 用于存储和索引安全日志数据
-   - 提供全文搜索和数据分析功能
-   - 端口: `9200`
-
-2. **OpenSearch Dashboards 3.5.0**
-   - 提供可视化界面，用于查看和分析安全数据
-   - 端口: `5601`
-
-3. **Wazuh Manager 4.14.0**
-   - 安全事件和事件管理(SIEM/SOAR)平台
-   - 收集和分析来自代理的安全数据
-   - 端口: `1514/UDP`, `1515/TCP`, `55000/TCP`
-
-4. **Logstash 8.9.0**
-   - 日志收集和预处理组件
-   - 将多种日志源(包括Wazuh告警、系统日志等)聚合到OpenSearch
-   - 配置文件位于 [logstash.conf](logstash.conf)
-
-### AI分析模块
-
-位于 [MVP](MVP) 目录下，包含以下核心组件：
-
-- **[tool](MVP/tool) 包**: 包含所有AI分析功能的模块化工具集合
-  - **[evidence_builder.py](MVP/tool/evidence_builder.py)**: 证据收集器，从Wazuh告警中提取标准化证据
-  - **[agent_analyzer.py](MVP/tool/agent_analyzer.py)**: AI分析引擎，根据收集的证据生成安全事件分析报告
-  - **[verifier.py](MVP/tool/verifier.py)**: 验证器，验证分析结果与证据的一致性
-  - **[readiness.py](MVP/tool/readiness.py)**: 评估数据完整性和可用性的准备度检查器
-  - **[report_generator.py](MVP/tool/report_generator.py)**: 生成最终的分析报告
-  - **[query_gateway.py](MVP/tool/query_gateway.py)**: 查询网关，提供与数据库交互的接口
-  - **[ocsf_mapper.py](MVP/tool/ocsf_mapper.py)**: OCSF标准映射器，将安全事件映射到通用安全遥测框架标准
-  - **[opensearch_loader.py](MVP/tool/opensearch_loader.py)**: OpenSearch加载器，负责从OpenSearch中加载数据
-
-- **[main.py](MVP/main.py)**: 主执行脚本，协调执行整个分析流程
-- **[metadata.json](MVP/metadata.json)**: 项目元数据配置文件
-
-## 功能特性
-
-- **多源日志收集**: 支持Wazuh告警、系统日志、SSH认证日志等多种数据源
-- **自动证据收集**: 自动从安全告警中提取和标准化证据
-- **智能事件分析**: 利用AI技术对安全事件进行分析，识别攻击类型和影响范围
-- **OCSF标准支持**: 支持通用安全遥测框架(OCSF)标准，提供标准化安全事件格式
-- **风险评估**: 对检测到的安全事件进行风险评分
-- **响应建议**: 提供针对特定安全事件的处置建议
-- **文件管理**: 生成的所有文件均带有时间戳并存储在 [outputs](MVP/outputs) 目录中，以时间戳子目录组织
+```
+Wazuh Agent 检测异常
+  → Wazuh Manager 追加告警到 alerts.json (NDJSON)
+  → SignalWatcher 检测新行 (每2秒轮询)
+  → 生成轻量级微信号 → NATS soc.signals.*
+  → Server Signal Listener 接收 → 触发按需查询
+  → NATS soc.query.requests
+  → Client DuckDB Sidecar 执行本地查询 → 只返回关键证据字段
+  → NATS soc.query.results
+  → Server 接收 → OCSF标准化 → 数据质量门控 → Agent Team研判 → 复核 → 持久化
+```
 
 ## 快速开始
 
 ### 环境要求
 
-- Docker
-- Docker Compose
-- 至少8GB可用内存（推荐16GB）
+- Python 3.10+
+- Docker + Docker Compose
+- 至少 8GB 可用内存（推荐 16GB）
 
-### 启动步骤
-
-1. 克隆项目到本地环境：
-
-   ```bash
-   git clone <your-repo-url>
-   cd SOC
-   ```
-
-2. 启动所有服务：
-
-   ```bash
-   docker-compose up -d
-   ```
-
-3. 等待所有容器启动完成：
-
-   ```bash
-   # 检查服务状态
-   docker ps
-   ```
-
-4. 访问各服务界面：
-   - OpenSearch Dashboard: http://localhost:5601
-   - Wazuh Web Interface: http://localhost:55000 (默认用户名admin，默认密码admin)
-
-5. 运行AI分析：
-
-   ```bash
-   cd MVP
-   python main.py
-   ```
-
-## 依赖项安装
-
-在运行AI分析模块之前，请确保安装必要的Python依赖项：
+### 1. 安装依赖
 
 ```bash
-# 进入MVP目录
-cd MVP
-
-# 安装Python依赖项（如果有的话）
-pip install -r requirements.txt  # 如果存在requirements.txt文件
+pip install -r requirements.txt
 ```
 
-注意：如果这是首次运行，可能需要安装Python库如requests、pandas、json等，它们是处理数据和API请求所必需的。
+### 2. 启动（两个终端窗口）
 
-## 使用说明
+**终端 1 — 启动服务端（中心侧）：**
 
-### 数据流程
-
-1. **数据采集**: Logstash从多个源（Wazuh告警、系统日志、SSH日志等）采集数据
-2. **数据存储**: 所有日志被发送到OpenSearch进行存储和索引
-3. **证据构建**: [evidence_builder.py](MVP/tool/evidence_builder.py) 从Wazuh告警中提取标准化证据，并创建以时间戳命名的输出目录
-4. **就绪度评估**: [readiness.py](MVP/tool/readiness.py) 评估证据的完整性和可用性
-5. **AI分析**: [agent_analyzer.py](file:///admin/SOC/MVP/tool/agent_analyzer.py) 对收集的证据进行分析并生成结果
-6. **结果验证**: [verifier.py](MVP/tool/verifier.py) 检查分析结果与证据的一致性
-7. **报告生成**: [report_generator.py](MVP/tool/report_generator.py) 生成最终的分析报告
-
-### 执行顺序
-
-脚本必须按照以下顺序执行，以确保每个步骤都有其所需的输入文件：
-
-1. [evidence_builder.py](/MVP/tool/evidence_builder.py) - 构建证据并创建时间戳目录
-2. [readiness.py](/MVP/tool/readiness.py) - 评估数据就绪度
-3. [agent_analyzer.py](/MVP/tool/agent_analyzer.py) - 进行AI分析
-4. [verifier.py](/MVP/tool/verifier.py) - 验证结果
-5. [report_generator.py](MVP/tool/report_generator.py) - 生成最终报告
-
-可选步骤：
-可视化界面：[dashboard.py](MVP/dashboard.py)
-
-### 文件组织结构
-
-所有输出文件都保存在 [outputs](MVP/outputs) 目录中，按时间戳创建子目录，例如：
-
+```bash
+bash scripts/run_server.sh
 ```
-outputs/
-└── 20260514_120024/
-    ├── evidence.json
-    ├── readiness.json
-    ├── agent_result.json
-    ├── verifier_result.json
-    └── report.md
+
+该脚本会自动：
+- 检查并启动 Docker 基础设施（OpenSearch、NATS、Wazuh Manager）
+- 启动 Query Gateway（FastAPI，端口 8000）
+- 启动 Signal Listener（监听 NATS 信令）
+- 启动 Query Result Listener（监听查询结果）
+- 启动 Dashboard（Streamlit，端口 8501）
+
+**终端 2 — 启动客户端（边缘侧）：**
+
+```bash
+bash scripts/run_client.sh
 ```
+
+该脚本会自动：
+- 检查 NATS 连接
+- 检查 Wazuh 告警数据源
+- 启动 DuckDB Sidecar（监听查询请求）
+- 启动 SignalWatcher（实时监控新告警）
+- 发布初始信号批次
+
+两个终端窗口会实时展示 Client ↔ Server 之间的交互过程。
+
+### 3. 触发测试告警
+
+提供两种测试方式，在 Client 和 Server 都运行后使用：
+
+**方式一：直接注入 alerts.json（快速测试 SOC 内部链路）**
+
+向告警文件追加模拟 JSON 行，SignalWatcher 在 2 秒内检测到：
+
+```bash
+bash scripts/trigger_test.sh              # 注入 5 条 SSH 暴力破解告警 (5503)
+bash scripts/trigger_test.sh 3 5710       # 注入 3 条端口扫描告警
+bash scripts/trigger_test.sh 2 random     # 随机规则
+```
+
+测试链路：`alerts.json → SignalWatcher → 信号 → NATS → Server → 查询 → 证据 → 研判`
+
+**方式二：系统层真实操作（端到端测试，含 Wazuh Agent）**
+
+在系统中执行真实操作，产生 `auth.log` 日志，被 Wazuh Agent 捕获后触发全链路：
+
+```bash
+bash scripts/trigger_syslog.sh ssh        # SSH 暴力破解 (PTY 发送错误密码)
+bash scripts/trigger_syslog.sh su         # su/sudo 认证失败 + 提权尝试
+bash scripts/trigger_syslog.sh scan       # 端口扫描
+bash scripts/trigger_syslog.sh all        # 依次执行以上所有
+```
+
+测试链路：`系统操作 → /var/log/auth.log → Wazuh Agent → Manager → alerts.json → SignalWatcher → ...`
+
+支持的检测规则：`5503`(爆破)、`2501`(认证失败)、`5710`(扫描)、`5501`(登录)、`5502`(会话)、`5712`(侦查)、`5763`(提权)、`5715`(横向移动)
+
+### 4. 停止
+
+```bash
+bash scripts/stop_server.sh    # 停止服务端
+bash scripts/stop_client.sh    # 停止客户端
+```
+
+### 5. 访问 Dashboard
+
+打开浏览器访问 `http://localhost:8501` 查看可视化研判面板。
+
+### 6. 单次分析（可选）
+
+如果不需要实时监控，也可以运行一次性分析流程：
+
+```bash
+cd MVP && python main.py
+```
+
+## 服务端口
+
+| 服务 | 地址 |
+|------|------|
+| Query Gateway | `http://localhost:8000` |
+| Dashboard | `http://localhost:8501` |
+| OpenSearch | `http://localhost:9200` |
+| OpenSearch Dashboards | `http://localhost:5601` |
+| NATS Monitoring | `http://localhost:8222` |
 
 ## 项目结构
 
 ```
 SOC/
-├── MVP/                    # AI分析模块
-│   ├── main.py            # 主执行脚本
-│   ├── tool/              # AI分析工具包
-│   │   ├── __init__.py    # 包初始化文件
-│   │   ├── evidence_builder.py # 证据收集器
-│   │   ├── agent_analyzer.py # AI分析引擎
-│   │   ├── query_gateway.py # 查询接口
-│   │   ├── verifier.py    # 结果验证器
-│   │   ├── readiness.py   # 数据准备度检查
-│   │   ├── report_generator.py # 报告生成器
-│   │   ├── ocsf_mapper.py # OCSF标准映射器
-│   │   └── opensearch_loader.py # OpenSearch数据加载器
-│   ├── outputs/           # 存放生成的带时间戳的文件
-│   ├── data/              # 示例数据目录
-│   │   └── node-web-01/   # 示例节点数据
-│   │       ├── nginx_access.json # Nginx访问日志
-│   │       └── wazuh_alerts.json # Wazuh告警示例
-│   └── metadata.json      # 项目元数据配置文件
-├── docker-compose.yml     # Docker容器编排配置
-├── logstash.conf         # Logstash数据管道配置
-├── wazuh_logs/           # Wazuh日志目录
-│   ├── alerts/           # 告警日志
-│   │   ├── 2026/         # 年份目录
-│   │   └── alerts.json   # 告警示例
-│   └── logs/             # 原始日志
-├── filebeat/             # Filebeat配置目录
-│   └── filebeat.yml      # Filebeat配置文件
-├── initial_code/         # 初始代码备份
-│   ├── agent_analyzer.py # 初始AI分析代码
-│   ├── evidence_builder.py # 初始证据收集代码
-│   ├── query_gateway.py  # 初始查询网关代码
-│   ├── readiness.py      # 初始就绪度检查代码
-│   ├── report_generator.py # 初始报告生成代码
-│   ├── verifier.py       # 初始验证器代码
-│   └── metadata.json     # 初始元数据配置
-└── README.md             # 项目说明文档
+├── scripts/                       # 启动/停止/测试 脚本
+│   ├── run_server.sh              # 启动服务端（终端1）
+│   ├── run_client.sh              # 启动客户端（终端2）
+│   ├── stop_server.sh             # 停止服务端
+│   ├── stop_client.sh             # 停止客户端
+│   └── trigger_test.sh            # 注入模拟告警，触发研判链路
+│
+├── MVP/
+│   ├── main.py                    # 单次分析入口（9步流水线）
+│   ├── config.py                  # 全局配置
+│   ├── metadata.json              # 数据源注册表
+│   │
+│   ├── client/                    # 边缘侧模块
+│   │   ├── client_app.py          # 客户端统一入口（Sidecar + Watcher）
+│   │   ├── duckdb_sidecar.py      # DuckDB 边缘查询引擎
+│   │   ├── signal_generator.py    # 微信号生成与 NATS 发布
+│   │   ├── local_gateway.py       # 本地 DuckDB 查询封装
+│   │   ├── evidence_builder.py    # 证据构建与固化
+│   │   └── agent_analyzer.py      # 规则引擎分析器（回退用）
+│   │
+│   ├── server/                    # 中心侧模块
+│   │   ├── server_app.py          # 服务端统一入口（Listener + Gateway + Dashboard）
+│   │   ├── signal_listener.py     # NATS 信令监听器
+│   │   ├── query_gateway.py       # FastAPI 查询网关
+│   │   ├── agent_team.py          # 多Agent LLM 研判（Triage/AttackChain/Report）
+│   │   ├── readiness.py           # 数据质量门控
+│   │   ├── verifier.py            # 复核校验（防AI幻觉）
+│   │   ├── report_generator.py    # Markdown 研判报告
+│   │   ├── opensearch_loader.py   # OpenSearch 数据持久化
+│   │   └── dashboard.py           # Streamlit 可视化面板
+│   │
+│   ├── common/                    # 共享模块
+│   │   └── ocsf_mapper.py         # OCSF-lite 字段标准化
+│   │
+│   └── outputs/                   # 分析结果（按时间戳组织）
+│       └── 20260515_144330/
+│           ├── evidence.json
+│           ├── readiness.json
+│           ├── agent_result.json
+│           ├── agent_draft.json
+│           ├── verifier_result.json
+│           └── report.md
+│
+├── wazuh_logs/                    # Wazuh 日志挂载目录
+│   └── alerts/alerts.json        # 告警数据 (NDJSON)
+│
+├── documentation/                 # 项目文档
+│   ├── tech.md                    # 技术栈总览
+│   ├── realise.md                 # 各模块实现说明
+│   ├── tech-basics.md             # 技术基础指南
+│   └── issues.md                  # 常见问题与解决方案
+│
+├── docker-compose.yml             # 基础设施编排
+├── Dockerfile                     # Python 服务镜像
+├── requirements.txt               # Python 依赖
+└── README.md
 ```
 
-## 安全告警类型
+## 研判流程（9步流水线）
 
-当前系统预计可以用于检测多种安全事件，包括但不限于：
+| 步骤 | 模块 | 职责 |
+|------|------|------|
+| 1-2 | `SignalWatcher` / `signal_generator` | 实时监控告警 → 生成微信号 → NATS 发布 |
+| 3-5 | `DuckDB Sidecar` + `ocsf_mapper` | 按需查询 → OCSF 标准化 |
+| 6 | `readiness` | 数据质量门控（覆盖度/完整性/时序/唯一性） |
+| 7 | `agent_team` | LLM 多Agent研判（分诊 → 攻击链 → 报告草稿） |
+| 8 | `verifier` | 复核校验（evidence_ref/raw_ref/lineage_id 溯源） |
+| 9 | `report_generator` + `dashboard` | 报告生成 + 可视化展示 |
 
-- Web攻击（SQL注入、XSS等）
-- 异常登录行为
-- 恶意扫描活动
-- 权限提升尝试
-- 系统异常行为
+## Agent Team 研判
 
-## 维护和扩展
+支持两种模式：
 
-- 可以通过修改 [logstash.conf](logstash.conf) 添加新的日志源
-- AI分析模块可以扩展以支持更多类型的攻击检测
-- Wazuh规则可以根据实际需求进行定制
-- 输出文件的时间戳格式可根据需要进行调整
-- 支持OCSF标准，可以扩展更多安全事件标准化映射
+### LLM 模式（默认）
+调用 Anthropic API 进行 AI 分析。3个Agent协作：
+- **Triage Agent** — 分诊：判断事件类型、优先级、置信度
+- **Attack Chain Agent** — 攻击链：映射证据到 Kill Chain 阶段
+- **Report Agent** — 报告：生成具体可执行的处置建议
+
+### 规则模式（回退）
+LLM 不可用时自动回退。覆盖 7 种事件类型：
+`brute_force` / `scanning` / `malware_detected` / `reconnaissance` / `privilege_escalation` / `lateral_movement` / `data_exfiltration`
+
+## 支持的检测规则
+
+| 规则ID | 类型 | 描述 |
+|--------|------|------|
+| 5503 | brute_force | SSH/RDP 暴力破解 |
+| 5710 | scanning | 端口扫描 |
+| 5501 | malware_detected | 恶意软件检测 |
+| 5712 | reconnaissance | 信息侦查 |
+| 5763 | privilege_escalation | 权限提升 |
+| 5715 | lateral_movement | 横向移动 |
+| 5502 | data_exfiltration | 数据外泄 |
+
+## 配置说明
+
+主要配置项在 `MVP/config.py` 中：
+
+```python
+# 数据路径
+WAZUH_LOGS_DIR       # Wazuh 日志目录
+ALERTS_JSON_PATH     # 告警数据文件路径
+OUTPUTS_DIR          # 分析结果输出目录
+
+# 服务连接
+OPENSEARCH_HOST      # OpenSearch 地址 (默认 127.0.0.1:9200)
+NATS_SERVERS         # NATS 服务器列表
+
+# LLM 分析
+ANTHROPIC_API_KEY    # 从环境变量 ANTHROPIC_AUTH_TOKEN 读取
+ANTHROPIC_MODEL      # 模型名称 (默认 claude-sonnet-4-6)
+
+# 实时监控
+WATCH_INTERVAL       # 告警文件轮询间隔 (默认 2秒, 在 client_app.py 中)
+```
+
+数据源注册在 `MVP/metadata.json` 中，支持多节点、多数据源的灵活配置。
 
 ## 故障排除
 
-常见问题及解决方法：
-
-1. **容器无法启动**：
-   - 检查Docker和Docker Compose是否正确安装
-   - 确认有足够的内存资源（至少8GB）
-   - 查看Docker日志以获取详细错误信息
-
-2. **AI分析模块无法连接到OpenSearch**：
-   - 检查OpenSearch服务是否正在运行
-   - 确认网络连接和端口可达性
-   - 验证配置文件中的连接参数
-
-3. **执行脚本顺序错误**：
-   - 确保按照正确顺序执行各个脚本
-   - 检查时间戳目录是否存在所需的输入文件
-
-4. **Python环境问题**：
-   - 确保Python版本兼容（Python 3.x）
-   - 安装所有必要的依赖库
-
-## 注意事项
-
-- 在生产环境中部署前，请确保更新Wazuh的访问凭据
-- 根据实际硬件资源调整OpenSearch的JVM内存设置
-- 定期备份重要安全数据
-- 生成的所有文件均位于 [outputs](MVP/outputs) 目录中，按时间戳子目录组织
-- 执行脚本时必须遵循正确的顺序，以确保每个步骤都有其所需的输入文件
-- 确保AI分析模块的Python环境正确配置
-- 保持Docker容器资源充足，特别是内存分配
+| 问题 | 解决方法 |
+|------|----------|
+| Docker 容器无法启动 | 检查内存 >= 8GB，`docker compose logs` 查看日志 |
+| LLM API 调用失败 | 检查 `ANTHROPIC_AUTH_TOKEN` 环境变量，系统自动回退规则引擎 |
+| OpenSearch 连接失败 | `docker compose up -d opensearch`，数据已本地保存可稍后重试 |
+| NATS 连接失败 | 确认 Docker 基础设施已启动，先运行 `scripts/run_server.sh` |
+| DuckDB 查询失败 | 确认 `wazuh_logs/alerts/alerts.json` 存在且为 NDJSON 格式 |
+| 无实时信号 | 确认 Wazuh Agent 已连接 Manager，alerts.json 有新告警写入 |
 
 ## 许可证
 
-本项目采用 MIT 许可证。详情请参见 [LICENSE](LICENSE) 文件。
-
-## Who Are We？
-- SOC MVP项目组
+MIT License

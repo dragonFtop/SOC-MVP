@@ -1,0 +1,26 @@
+# AI-SOC MVP 依赖清单
+# pip install -r requirements.txt
+
+# 核心依赖
+nats-py>=2.8.0        # NATS JetStream 客户端（边缘←→中心通信）
+fastapi>=0.104.0      # Query Gateway 框架
+uvicorn[standard]>=0.24.0  # ASGI 服务器
+duckdb>=0.9.0         # 嵌入式查询引擎
+anthropic>=0.40.0     # Anthropic API 客户端（Agent Team LLM 分析）
+
+# OpenSearch 客户端
+opensearch-py>=2.4.0
+
+# 可视化
+streamlit>=1.28.0     # Dashboard 面板
+
+# 数据验证
+pydantic>=2.5.0       # 请求/响应模型
+
+# HTTP 客户端（用于边缘侧查询请求）
+aiohttp>=3.9.0
+httpx>=0.25.0
+
+# 工具
+python-multipart>=0.0.6  # FastAPI 文件上传
+python-dateutil>=2.8.0   # 日期解析

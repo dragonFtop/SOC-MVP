@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.pyo
+
+MVP/client/signals_fallback.json
+MVP/outputs/
+
+.env

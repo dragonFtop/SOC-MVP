@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # 1. OpenSearch 3.5.0 可能会改为2.19版本
   opensearch:
@@ -37,13 +35,14 @@ services:
     networks:
       - aisoc-net
 
-  # 3. Wazuh Manager 这个需要更改为4.14版本，4.9版本存在高危安全漏洞
+  # 3. Wazuh Manager 4.14.0
   wazuh-manager:
     image: wazuh/wazuh-manager:4.14.0
     container_name: wazuh-manager
     restart: always
     ports:
       - 1514:1514/udp
+      - 1514:1514/tcp
       - 1515:1515
       - 55000:55000
     volumes:
@@ -51,7 +50,19 @@ services:
     networks:
       - aisoc-net
 
-  # 4. Logstash
+  # 4. NATS JetStream (消息总线)
+  nats:
+    image: nats:2.10-alpine
+    container_name: nats
+    command: "--jetstream --http_port 8222"
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    restart: unless-stopped
+    networks:
+      - aisoc-net
+
+  # 5. Logstash
   logstash:
     image: opensearchproject/logstash-oss-with-opensearch-output-plugin:8.9.0
     container_name: logstash-wazuh
