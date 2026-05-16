@@ -19,18 +19,18 @@ import hashlib
 import os as _os
 import sys as _sys
 import uuid
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    import nats
 
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
 import duckdb
 
-from config import NATS_SERVERS, NATS_QUERY_REQUESTS, NATS_QUERY_RESULTS, DEFAULT_NODE_ID
-
-
-def _get_nats():
-    import nats
-    return nats
+from config import NATS_SERVERS, NATS_QUERY_REQUESTS, NATS_QUERY_RESULTS, DEFAULT_NODE_ID, ALERTS_JSON_PATH
+from common.nats_utils import get_nats, subscribe_safe, ensure_stream, safe_ack, MAX_DELIVERY_ATTEMPTS
+from common.monitor_events import MonitorEmitter
 
 
 class DuckDBQueryEngine:
@@ -44,48 +44,75 @@ class DuckDBQueryEngine:
         self.nc: Optional[nats.NATS] = None
         self.js: Optional[nats.JetStreamContext] = None
         self.stats = {"received": 0, "processed": 0, "failed": 0}
+        self.monitor = None
 
     async def connect_nats(self):
         """连接到 NATS JetStream"""
-        nats = _get_nats()
+        nats = get_nats()
         self.nc = await nats.connect(servers=NATS_SERVERS, name=f"duckdb-sidecar-{self.node_id}")
         self.js = self.nc.jetstream()
         await self._ensure_streams()
+        self.monitor = MonitorEmitter(self.nc, "DuckDBSidecar", self.node_id)
         print(f"✅ [DuckDBSidecar:{self.node_id}] 已连接到 NATS")
 
     async def _ensure_streams(self):
-        """确保所需的 JetStream Stream 存在"""
+        """确保所需的 JetStream Stream 存在（幂等，带默认限制）"""
         for name, subject in [
             ("QUERY_REQUESTS", NATS_QUERY_REQUESTS),
             ("QUERY_RESULTS", NATS_QUERY_RESULTS),
         ]:
-            try:
-                await self.js.add_stream(name=name, subjects=[subject])
-            except Exception:
-                pass
+            await ensure_stream(self.js, name, [subject])
 
     def connect_duckdb(self):
         """初始化 DuckDB 连接"""
         self.con = duckdb.connect()
         print(f"✅ [DuckDBSidecar:{self.node_id}] DuckDB 已就绪")
 
-    def execute_query(self, sql: str) -> tuple[list[tuple], float]:
+    def execute_query(self, sql: str, max_retries: int = 2) -> tuple[list[tuple], float]:
         """
-        执行 DuckDB 查询
+        执行 DuckDB 查询，遇到文件竞态错误时自动重试。
 
-        Returns:
-            (rows, execution_time_ms)
+        Wazuh Manager 写入 alerts.json 与 DuckDB 读取可能产生竞态，
+        导致 "Malformed JSON / unexpected end of data" 错误，重试通常能解决。
         """
         if self.con is None:
             raise RuntimeError("DuckDB 连接未初始化，请先调用 connect_duckdb()")
         import time
-        start = time.time()
+        last_error = None
 
-        result = self.con.execute(sql)
-        rows = result.fetchall()
+        for attempt in range(max_retries + 1):
+            start = time.time()
+            try:
+                result = self.con.execute(sql)
+                rows = result.fetchall()
+                elapsed = (time.time() - start) * 1000
+                return rows, round(elapsed, 2)
+            except Exception as e:
+                last_error = e
+                err_msg = str(e)
+                if attempt < max_retries and ("Malformed JSON" in err_msg or "unexpected end of data" in err_msg):
+                    wait = 0.3 * (attempt + 1)
+                    print(f"⚠️ [DuckDBSidecar:{self.node_id}] 查询遇到文件竞态，{wait:.1f}s 后重试 ({attempt+1}/{max_retries})")
+                    time.sleep(wait)
+                else:
+                    raise
 
-        elapsed = (time.time() - start) * 1000
-        return rows, round(elapsed, 2)
+        raise last_error  # type: ignore[misc]
+
+    def _build_sql(self, request: dict) -> str:
+        """从查询请求中的 filters 构建 DuckDB SQL"""
+        fields = request.get("fields", ["*"])
+        fields_str = ", ".join(fields) if fields != ["*"] else "*"
+        data_path = ALERTS_JSON_PATH
+        sql = f"SELECT {fields_str} FROM read_json_auto('{data_path}')"
+        where_clauses = []
+        rule_id = request.get("filters", {}).get("rule.id") or request.get("filters", {}).get("rule_id")
+        if rule_id:
+            where_clauses.append(f"\"rule\".\"id\" = '{rule_id}'")
+        if where_clauses:
+            sql += " WHERE " + " AND ".join(where_clauses)
+        sql += f" LIMIT {request.get('limit', 20)}"
+        return sql
 
     def build_evidence_from_rows(
         self, rows: list[tuple], query_id: str
@@ -130,24 +157,33 @@ class DuckDBQueryEngine:
         self.stats["received"] += 1
         request = None
 
-        try:
+        async def _process():
+            nonlocal request
             request = json.loads(msg.data.decode())
             query_id = request.get("query_id", "unknown")
             sql = request.get("sql", "")
             source = request.get("source", "wazuh-alerts")
 
             print(f"📩 [DuckDBSidecar:{self.node_id}] 收到查询: {query_id}")
+            if self.monitor:
+                await self.monitor.query_received(query_id=query_id, node_id=self.node_id)
 
-            if not sql:
-                print(f"⚠️ [DuckDBSidecar] 查询 {query_id} 缺少 SQL 语句")
-                await msg.ack()
-                return
+            if not sql or not sql.strip():
+                if "filters" in request:
+                    sql = self._build_sql(request)
+                else:
+                    print(f"⚠️ [DuckDBSidecar] 查询 {query_id} 缺少 SQL 语句")
+                    return
 
             # 执行查询
             rows, elapsed = self.execute_query(sql)
 
             # 构建轻量级证据
             evidence = self.build_evidence_from_rows(rows, query_id)
+
+            if self.monitor:
+                await self.monitor.query_executed(query_id=query_id, duration_ms=elapsed,
+                                                  evidence_count=len(evidence))
 
             # 发送结果回中心
             result_msg = {
@@ -165,39 +201,18 @@ class DuckDBQueryEngine:
             )
 
             print(f"📤 [DuckDBSidecar:{self.node_id}] 返回 {len(evidence)} 条证据 ({elapsed}ms)")
+            if self.monitor:
+                await self.monitor.result_sent(query_id=query_id, node_id=self.node_id,
+                                               evidence_count=len(evidence), duration_ms=elapsed)
 
+        acked = await safe_ack(msg, on_success=_process)
+        if acked:
             self.stats["processed"] += 1
-            await msg.ack()
-
-        except Exception as e:
-            print(f"❌ [DuckDBSidecar:{self.node_id}] 处理查询失败: {e}")
+        else:
             self.stats["failed"] += 1
-
-            # 发送错误回中心
-            error_msg = {
-                "query_id": request.get("query_id", "unknown") if request else "unknown",
-                "node_id": self.node_id,
-                "error": str(e),
-            }
-            if self.js is not None:
-                await self.js.publish(
-                    f"{NATS_QUERY_RESULTS}.error",
-                    json.dumps(error_msg).encode(),
-                )
-            await msg.ack()
-
-    async def _subscribe_safe(self, subject: str, durable: str):
-        """订阅并自动处理残留 consumer 冲突"""
-        try:
-            return await self.js.subscribe(subject, durable=durable, manual_ack=True)
-        except Exception:
-            # consumer 残留，从对应 stream 中删除后重试
-            for stream_name in ["QUERY_REQUESTS", "QUERY_RESULTS", "SIGNALS"]:
-                try:
-                    await self.js.delete_consumer(stream_name, durable)
-                except Exception:
-                    pass
-            return await self.js.subscribe(subject, durable=durable, manual_ack=True)
+            md = getattr(msg, 'metadata', None)
+            attempts = getattr(md, 'num_delivered', 1) if md else 1
+            print(f"❌ [DuckDBSidecar:{self.node_id}] 处理查询失败，重试中 ({attempts}/{MAX_DELIVERY_ATTEMPTS})")
 
     async def start_listening(self):
         """
@@ -208,7 +223,7 @@ class DuckDBQueryEngine:
 
         # 订阅查询请求主题
         consumer_name = f"duckdb-sidecar-{self.node_id}"
-        sub = await self._subscribe_safe(NATS_QUERY_REQUESTS, consumer_name)
+        sub = await subscribe_safe(self.js, NATS_QUERY_REQUESTS, consumer_name)
 
         print(f"👂 [DuckDBSidecar:{self.node_id}] 开始监听 {NATS_QUERY_REQUESTS}")
 

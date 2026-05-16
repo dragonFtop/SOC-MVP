@@ -58,7 +58,7 @@ with st.sidebar:
     st.divider()
     st.success(f"当前任务：\n{selected_task}")
 
-task_path = os.path.join(OUTPUTS_DIR, selected_task)
+task_path = os.path.join(OUTPUTS_DIR, selected_task) if selected_task else None
 
 # -------------------------- 工具函数：安全读取字段 --------------------------
 def safe_get(data, key, default="未知"):
@@ -170,3 +170,19 @@ with st.container(border=True):
 # -------------------------- 底部信息 --------------------------
 st.divider()
 st.caption("AI-SOC | 数据编织架构 | 边缘采集 → 按需取证 → 标准化 → 可信研判")
+
+
+def run_dashboard(port: int = 8501):
+    """启动 Streamlit Dashboard（阻塞，通常在独立线程中调用）"""
+    import subprocess
+    import sys
+    print(f"[Dashboard] 启动中 -> http://localhost:{port}")
+    subprocess.run(
+        [sys.executable, "-m", "streamlit", "run",
+         __file__,
+         "--server.port", str(port),
+         "--server.headless", "true",
+         "--browser.gatherUsageStats", "false"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )

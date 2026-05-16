@@ -322,14 +322,22 @@ async def execute_query(request: QueryRequest):
     )
 
 
-# ====================== 独立运行入口 ======================
-if __name__ == "__main__":
+def run_gateway(host: str = None, port: int = None, log_level: str = "warning"):
+    """启动 Query Gateway 服务（阻塞，通常在独立线程中调用）"""
     import uvicorn
     from config import QUERY_GATEWAY_HOST, QUERY_GATEWAY_PORT
 
+    host = host or QUERY_GATEWAY_HOST
+    port = port or QUERY_GATEWAY_PORT
+    print(f"[QueryGateway] 启动中 -> http://{host}:{port}")
     uvicorn.run(
-        "MVP.server.query_gateway:app",
-        host=QUERY_GATEWAY_HOST,
-        port=QUERY_GATEWAY_PORT,
-        reload=True,
+        "server.query_gateway:app",
+        host=host,
+        port=port,
+        log_level=log_level,
     )
+
+
+# ====================== 独立运行入口 ======================
+if __name__ == "__main__":
+    run_gateway()

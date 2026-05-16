@@ -19,6 +19,11 @@ try:
 except ImportError:
     SignalListener = None
 
+try:
+    from .query_result_listener import QueryResultListener
+except ImportError:
+    QueryResultListener = None
+
 __all__ = [
     "load_to_opensearch",
     "OpenSearchClient",
@@ -31,4 +36,5 @@ __all__ = [
     "run_analysis",
     "app",
     "SignalListener",
+    "QueryResultListener",
 ]

@@ -17,16 +17,16 @@ import json
 import os as _os
 import sys as _sys
 import uuid
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    import nats
 
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
 from config import NATS_SERVERS, NATS_SIGNAL_SUBJECT, DEFAULT_CASE_ID
-
-
-def _get_nats():
-    import nats
-    return nats
+from common.nats_utils import get_nats, subscribe_safe, safe_ack, ensure_stream, MAX_DELIVERY_ATTEMPTS
+from common.monitor_events import MonitorEmitter
 
 
 class SignalListener:
@@ -39,12 +39,14 @@ class SignalListener:
         self.js: Optional[nats.JetStreamContext] = None
         self.processed_count = 0
         self.fail_count = 0
+        self.monitor = None
 
     async def connect(self):
         """连接到 NATS JetStream"""
-        nats = _get_nats()
+        nats = get_nats()
         self.nc = await nats.connect(servers=NATS_SERVERS)
         self.js = self.nc.jetstream()
+        self.monitor = MonitorEmitter(self.nc, "SignalListener")
         print(f"✅ [SignalListener] 已连接到 NATS: {NATS_SERVERS}")
 
     async def handle_signal(self, msg):
@@ -54,14 +56,22 @@ class SignalListener:
         2. 生成查询请求
         3. 下发到边缘查询
         """
-        try:
+        async def _process():
             signal = json.loads(msg.data.decode())
             print(f"📩 [SignalListener] 收到信号: {signal.get('signal_id')}")
+            if self.monitor:
+                await self.monitor.signal_received(
+                    signal_id=signal.get("signal_id"),
+                    node_id=signal.get("node_id"),
+                    rule_id=signal.get("rule_id"))
 
-            # 记录到 OpenSearch
-            from .opensearch_loader import OpenSearchClient
-            os_client = OpenSearchClient()
-            os_client.index("soc-signals", signal)
+            # 记录到 OpenSearch (best-effort, 不影响查询下发)
+            try:
+                from .opensearch_loader import OpenSearchClient
+                os_client = OpenSearchClient()
+                os_client.index("soc-signals", signal)
+            except Exception:
+                pass
 
             # 触发按需查询
             query_id = f"qry-{uuid.uuid4().hex[:8]}"
@@ -75,39 +85,34 @@ class SignalListener:
                 "limit": 20,
             }
 
-            # 发布查询请求到边缘
             await self.js.publish(
                 "soc.query.requests",
                 json.dumps(query_request).encode(),
             )
             print(f"📤 [SignalListener] 已下发查询: {query_id}")
+            if self.monitor:
+                await self.monitor.query_sent(query_id=query_id,
+                                              signal_id=signal.get("signal_id"),
+                                              node_id=signal.get("node_id"))
 
-            await msg.ack()
+        acked = await safe_ack(msg, on_success=_process)
+        if acked:
             self.processed_count += 1
-
-        except Exception as e:
-            print(f"❌ [SignalListener] 处理信号失败: {e}")
+        else:
             self.fail_count += 1
-            await msg.ack()  # 防止阻塞队列
-
-    async def _subscribe_safe(self, subject: str, durable: str):
-        """订阅并自动处理残留 consumer 冲突"""
-        try:
-            return await self.js.subscribe(subject, durable=durable, manual_ack=True)
-        except Exception:
-            for stream_name in ["SIGNALS", "QUERY_REQUESTS", "QUERY_RESULTS"]:
-                try:
-                    await self.js.delete_consumer(stream_name, durable)
-                except Exception:
-                    pass
-            return await self.js.subscribe(subject, durable=durable, manual_ack=True)
+            md = getattr(msg, 'metadata', None)
+            attempts = getattr(md, 'num_delivered', 1) if md else 1
+            print(f"❌ [SignalListener] 处理信号失败，重试中 ({attempts}/{MAX_DELIVERY_ATTEMPTS})")
 
     async def listen_forever(self):
         """持续监听信令主题"""
         await self.connect()
 
-        # 创建持久订阅（自动处理残留 consumer）
-        sub = await self._subscribe_safe(f"{NATS_SIGNAL_SUBJECT}.*", "signal-listener")
+        # 确保所需 Stream 存在（服务器可能比客户端先启动）
+        await ensure_stream(self.js, "SIGNALS", [f"{NATS_SIGNAL_SUBJECT}.*"])
+        await ensure_stream(self.js, "QUERY_REQUESTS", ["soc.query.requests"])
+
+        sub = await subscribe_safe(self.js, f"{NATS_SIGNAL_SUBJECT}.*", "signal-listener")
 
         print(f"👂 [SignalListener] 开始监听 {NATS_SIGNAL_SUBJECT}.*")
 

@@ -19,6 +19,11 @@ try:
 except ImportError:
     DuckDBQueryEngine = None
 
+try:
+    from .signal_watcher import SignalWatcher
+except ImportError:
+    SignalWatcher = None
+
 __all__ = [
     "analyze_event",
     "build_evidence",
@@ -28,4 +33,5 @@ __all__ = [
     "publish_signals_to_nats",
     "generate_and_publish",
     "DuckDBQueryEngine",
+    "SignalWatcher",
 ]

@@ -29,6 +29,7 @@ NATS_SERVERS = ["nats://localhost:4222"]  # NATS 服务器地址
 NATS_SIGNAL_SUBJECT = "soc.signals"       # 信号主题
 NATS_QUERY_REQUESTS = "soc.query.requests"  # 查询请求主题
 NATS_QUERY_RESULTS = "soc.query.results"    # 查询结果主题
+NATS_MONITOR_EVENTS = "soc.monitor.events"  # 监控事件主题
 
 # ====================== Metadata 配置 ======================
 METADATA_PATH = os.path.join(BASE_DIR, "metadata.json")

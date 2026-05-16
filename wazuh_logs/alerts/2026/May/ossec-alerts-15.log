@@ -5664,3 +5664,37 @@ tty: /dev/tty1
 Rule: 2501 (level 5) -> 'syslog: User authentication failure.'
 May 15 13:22:46 37vwmu3rudbyc0v login[162297]: FAILED LOGIN (1) on '/dev/tty1' FOR 'UNKNOWN', Authentication failure
 
+** Alert 1778851701.744936: - pam,syslog,authentication_failed,pci_dss_10.2.4,pci_dss_10.2.5,gpg13_7.8,gdpr_IV_35.7.d,gdpr_IV_32.2,hipaa_164.312.b,nist_800_53_AU.14,nist_800_53_AC.7,tsc_CC6.1,tsc_CC6.8,tsc_CC7.2,tsc_CC7.3,
+2026 May 15 13:28:21 (37vwmu3rudbyc0v) any->journald
+Rule: 5503 (level 5) -> 'PAM: User login failed.'
+May 15 13:28:20 37vwmu3rudbyc0v login[164352]: pam_unix(login:auth): authentication failure; logname=LOGIN uid=0 euid=0 tty=/dev/tty1 ruser= rhost=
+logname: LOGIN
+uid: 0
+euid: 0
+tty: /dev/tty1
+
+** Alert 1778851703.745456: - syslog,access_control,authentication_failed,pci_dss_10.2.4,pci_dss_10.2.5,gpg13_7.8,gdpr_IV_35.7.d,gdpr_IV_32.2,hipaa_164.312.b,nist_800_53_AU.14,nist_800_53_AC.7,tsc_CC6.1,tsc_CC6.8,tsc_CC7.2,tsc_CC7.3,
+2026 May 15 13:28:23 (37vwmu3rudbyc0v) any->journald
+Rule: 2501 (level 5) -> 'syslog: User authentication failure.'
+May 15 13:28:22 37vwmu3rudbyc0v login[164352]: FAILED LOGIN (1) on '/dev/tty1' FOR 'UNKNOWN', Authentication failure
+
+** Alert 1778851747.745924: - usb,
+2026 May 15 13:29:07 (37vwmu3rudbyc0v) any->journald
+Rule: 81102 (level 3) -> 'USB device disconnected'
+May 15 13:29:06 37vwmu3rudbyc0v kernel: usb 1-1: USB disconnect, device number 2
+
+** Alert 1778851747.746145: - usb,
+2026 May 15 13:29:07 (37vwmu3rudbyc0v) any->journald
+Rule: 81102 (level 3) -> 'USB device disconnected'
+May 15 13:29:07 37vwmu3rudbyc0v kernel: usb usb3: USB disconnect, device number 1
+
+** Alert 1778851747.746367: - usb,
+2026 May 15 13:29:07 (37vwmu3rudbyc0v) any->journald
+Rule: 81102 (level 3) -> 'USB device disconnected'
+May 15 13:29:07 37vwmu3rudbyc0v kernel: usb 3-1: USB disconnect, device number 2
+
+** Alert 1778851747.746588: - usb,
+2026 May 15 13:29:07 (37vwmu3rudbyc0v) any->journald
+Rule: 81102 (level 3) -> 'USB device disconnected'
+May 15 13:29:07 37vwmu3rudbyc0v kernel: usb usb2: USB disconnect, device number 1
+

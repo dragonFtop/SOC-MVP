@@ -11,7 +11,11 @@
 """
 
 import json
+import os
+import sys
 import uuid
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import (
     CLIENT_DIR,
@@ -20,12 +24,7 @@ from config import (
     DEFAULT_RULE_ID,
 )
 from .local_gateway import query_wazuh
-
-
-def _get_nats():
-    """延迟导入 nats，使得该依赖在不需要 NATS 时可选"""
-    import nats
-    return nats
+from common.nats_utils import get_nats, ensure_stream
 
 
 def build_signals_from_alerts(rule_id: str = DEFAULT_RULE_ID, limit: int = 20) -> list[dict]:
@@ -63,12 +62,8 @@ def build_signals_from_alerts(rule_id: str = DEFAULT_RULE_ID, limit: int = 20) -
 
 
 async def _ensure_stream_async(js, stream_name: str = "SIGNALS"):
-    """异步确保 Stream 存在"""
-    try:
-        await js.add_stream(name=stream_name, subjects=[f"{NATS_SIGNAL_SUBJECT}.*"])
-    except Exception:
-        # stream 可能已存在，忽略错误
-        pass
+    """异步确保 Stream 存在（幂等，带默认限制）"""
+    await ensure_stream(js, stream_name, [f"{NATS_SIGNAL_SUBJECT}.*"])
 
 
 async def publish_signals_to_nats(signals: list[dict]) -> int:
@@ -83,7 +78,7 @@ async def publish_signals_to_nats(signals: list[dict]) -> int:
     """
     nc = None
     try:
-        nats = _get_nats()
+        nats = get_nats()
         nc = await nats.connect(servers=NATS_SERVERS)
         js = nc.jetstream()
         await _ensure_stream_async(js)

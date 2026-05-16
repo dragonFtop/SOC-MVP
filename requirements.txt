@@ -12,7 +12,8 @@ anthropic>=0.40.0     # Anthropic API 客户端（Agent Team LLM 分析）
 opensearch-py>=2.4.0
 
 # 可视化
-streamlit>=1.28.0     # Dashboard 面板
+streamlit>=1.28.0          # Dashboard 面板
+streamlit-autorefresh>=1.0.0  # 实时监控面板自动刷新
 
 # 数据验证
 pydantic>=2.5.0       # 请求/响应模型
