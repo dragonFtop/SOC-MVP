@@ -152,17 +152,20 @@ Publisher ──msg──> Subject "foo.bar" ──msg──> Subscriber 1
 ### 2.2 本项目的 NATS 架构
 
 ```
-Stream: SIGNALS
+Stream: SIGNALS (JetStream)
   Subject: soc.signals.*          (通配符, 匹配 soc.signals.node-web-01 等)
-  Consumer: signal-listener-server (durable, 手动 ACK)
+  Consumer: signal-listener        (durable, 手动 ACK)
 
-Stream: QUERY_REQUESTS
+Stream: QUERY_REQUESTS (JetStream)
   Subject: soc.query.requests
-  Consumer: sidecar-node-web-01    (durable, 手动 ACK)
+  Consumer: duckdb-sidecar-{node_id} (durable, 手动 ACK)
 
-Stream: QUERY_RESULTS
+Stream: QUERY_RESULTS (JetStream)
   Subject: soc.query.results
   Consumer: query-result-listener  (durable, 手动 ACK)
+
+Core Pub/Sub (非 JetStream):
+  Subject: soc.monitor.events     → Monitor Dashboard (:8502) 实时消费
 ```
 
 ### 2.3 Python 客户端用法
@@ -850,22 +853,27 @@ SOC/                               # 项目根目录
 │   ├── client/                     # 边缘侧
 │   │   ├── client_app.py           # ★ 客户端主入口
 │   │   ├── duckdb_sidecar.py       # DuckDB 查询引擎
-│   │   ├── signal_generator.py     # 信号生成 (传统模式)
+│   │   ├── signal_watcher.py       # 实时信号监控
+│   │   ├── signal_generator.py     # 信号生成 (批量模式)
 │   │   ├── local_gateway.py        # DuckDB 查询封装
 │   │   ├── evidence_builder.py     # 证据构建
 │   │   └── agent_analyzer.py       # 规则分析器 (回退)
 │   ├── server/                     # 中心侧
 │   │   ├── server_app.py           # ★ 服务端主入口
 │   │   ├── signal_listener.py      # NATS 信令监听
+│   │   ├── query_result_listener.py # NATS 结果监听
 │   │   ├── query_gateway.py        # FastAPI 查询网关
 │   │   ├── agent_team.py           # LLM 多Agent研判
 │   │   ├── readiness.py            # 数据质量门控
 │   │   ├── verifier.py             # 复核校验
 │   │   ├── report_generator.py     # 报告生成
 │   │   ├── opensearch_loader.py    # OpenSearch 持久化
-│   │   └── dashboard.py            # Streamlit 可视化
+│   │   ├── dashboard.py            # Streamlit 研判面板 (:8501)
+│   │   └── monitor_dashboard.py   # Streamlit 实时监控 (:8502)
 │   ├── common/                     # 共享模块
-│   │   └── ocsf_mapper.py          # OCSF 标准化
+│   │   ├── ocsf_mapper.py          # OCSF 标准化
+│   │   ├── nats_utils.py           # NATS 工具函数
+│   │   └── monitor_events.py       # 监控事件发射器
 │   └── outputs/                    # 分析结果 (按时间戳)
 ├── wazuh_logs/                     # Wazuh 告警数据 (bind mount)
 │   ├── alerts/alerts.json          # 告警数据 (NDJSON)
@@ -879,9 +887,9 @@ SOC/                               # 项目根目录
 
 ## 学习路径建议
 
-1. **先理解数据流**: alerts.json → SignalWatcher → NATS → SignalListener → Query → Sidecar → 证据
+1. **先理解数据流**: alerts.json → SignalWatcher → NATS → SignalListener → Query → DuckDBQueryEngine → 证据 → Monitor Events
 2. **掌握容器化**: docker compose up/down/logs/exec
 3. **理解 Wazuh**: Agent 怎么采集 → Manager 怎么分析 → alerts.json 怎么生成
-4. **熟悉 NATS**: Pub/Sub 模式 → JetStream 持久化 → subject 设计
-5. **读懂 Python 代码**: client_app.py → server_app.py → agent_team.py
-6. **学会故障排查**: 看 ossec.log → 检查权限 → 验证连通性
+4. **熟悉 NATS**: Pub/Sub 模式 → JetStream 持久化 → subject 设计 → monitor events
+5. **读懂 Python 代码**: client_app.py → server_app.py → agent_team.py → nats_utils.py → monitor_events.py
+6. **学会故障排查**: 看 ossec.log → 检查权限 → 验证连通性 → Monitor Dashboard 实时诊断

@@ -18,12 +18,14 @@ AI-SOC (Artificial Intelligence Security Operations Center) 是一个基于**数
 │                                       │                     │
 └───────────────────────────────────────┼─────────────────────┘
                                         │
-                                 NATS JetStream
+                                 NATS (JetStream + Core)
                                         │
 ┌───────────────────────────────────────┼─────────────────────┐
 │                    终端 1: Server (中心侧)                    │
 │                                       │                     │
 │                              Signal Listener (信令监听)      │
+│                                       │                     │
+│                              Query Result Listener (结果接收) │
 │                                       │                     │
 │                              Query Gateway (FastAPI :8000)   │
 │                                       │                     │
@@ -32,6 +34,7 @@ AI-SOC (Artificial Intelligence Security Operations Center) 是一个基于**数
 │                              Verifier (复核校验)             │
 │                                       │                     │
 │                              Dashboard (Streamlit :8501)     │
+│                              Monitor Dashboard (:8502)       │
 │                                                             │
 │  存储层: OpenSearch + DuckDB                                 │
 └─────────────────────────────────────────────────────────────┘
@@ -48,7 +51,11 @@ Wazuh Agent 检测异常
   → NATS soc.query.requests
   → Client DuckDB Sidecar 执行本地查询 → 只返回关键证据字段
   → NATS soc.query.results
-  → Server 接收 → OCSF标准化 → 数据质量门控 → Agent Team研判 → 复核 → 持久化
+  → Server 接收 → 持久化
+
+所有组件通过 MonitorEmitter 发布监控事件:
+  → NATS soc.monitor.events (核心Pub/Sub)
+  → Monitor Dashboard (:8502) 实时展示
 ```
 
 ## 快速开始
@@ -151,6 +158,7 @@ cd MVP && python main.py
 |------|------|
 | Query Gateway | `http://localhost:8000` |
 | Dashboard | `http://localhost:8501` |
+| Monitor Dashboard | `http://localhost:8502` |
 | OpenSearch | `http://localhost:9200` |
 | OpenSearch Dashboards | `http://localhost:5601` |
 | NATS Monitoring | `http://localhost:8222` |
@@ -164,7 +172,8 @@ SOC/
 │   ├── run_client.sh              # 启动客户端（终端2）
 │   ├── stop_server.sh             # 停止服务端
 │   ├── stop_client.sh             # 停止客户端
-│   └── trigger_test.sh            # 注入模拟告警，触发研判链路
+│   ├── trigger_test.sh            # 注入模拟告警，触发研判链路
+│   └── trigger_syslog.sh          # 系统层真实操作触发测试
 │
 ├── MVP/
 │   ├── main.py                    # 单次分析入口（9步流水线）
@@ -173,25 +182,30 @@ SOC/
 │   │
 │   ├── client/                    # 边缘侧模块
 │   │   ├── client_app.py          # 客户端统一入口（Sidecar + Watcher）
-│   │   ├── duckdb_sidecar.py      # DuckDB 边缘查询引擎
-│   │   ├── signal_generator.py    # 微信号生成与 NATS 发布
+│   │   ├── duckdb_sidecar.py      # DuckDB 边缘查询引擎 (DuckDBQueryEngine)
+│   │   ├── signal_watcher.py      # 实时信号监控器 (SignalWatcher)
+│   │   ├── signal_generator.py    # 微信号生成与 NATS 发布（批量模式）
 │   │   ├── local_gateway.py       # 本地 DuckDB 查询封装
 │   │   ├── evidence_builder.py    # 证据构建与固化
 │   │   └── agent_analyzer.py      # 规则引擎分析器（回退用）
 │   │
 │   ├── server/                    # 中心侧模块
-│   │   ├── server_app.py          # 服务端统一入口（Listener + Gateway + Dashboard）
-│   │   ├── signal_listener.py     # NATS 信令监听器
+│   │   ├── server_app.py          # 服务端统一入口（Listener + Gateway + Dashboard + Monitor）
+│   │   ├── signal_listener.py     # NATS 信令监听器 (SignalListener)
+│   │   ├── query_result_listener.py # NATS 查询结果监听器 (QueryResultListener)
 │   │   ├── query_gateway.py       # FastAPI 查询网关
 │   │   ├── agent_team.py          # 多Agent LLM 研判（Triage/AttackChain/Report）
 │   │   ├── readiness.py           # 数据质量门控
 │   │   ├── verifier.py            # 复核校验（防AI幻觉）
 │   │   ├── report_generator.py    # Markdown 研判报告
 │   │   ├── opensearch_loader.py   # OpenSearch 数据持久化
-│   │   └── dashboard.py           # Streamlit 可视化面板
+│   │   ├── dashboard.py           # Streamlit 可视化面板 (:8501)
+│   │   └── monitor_dashboard.py   # 实时监控面板 (:8502)
 │   │
 │   ├── common/                    # 共享模块
-│   │   └── ocsf_mapper.py         # OCSF-lite 字段标准化
+│   │   ├── ocsf_mapper.py         # OCSF-lite 字段标准化
+│   │   ├── nats_utils.py          # NATS 连接/Stream/订阅/ACK 工具
+│   │   └── monitor_events.py      # 监控事件发射器 (MonitorEmitter)
 │   │
 │   └── outputs/                   # 分析结果（按时间戳组织）
 │       └── 20260515_144330/
@@ -209,7 +223,9 @@ SOC/
 │   ├── tech.md                    # 技术栈总览
 │   ├── realise.md                 # 各模块实现说明
 │   ├── tech-basics.md             # 技术基础指南
-│   └── issues.md                  # 常见问题与解决方案
+│   ├── issues.md                  # 常见问题与解决方案
+│   ├── plan.md                    # 实现方案
+│   └── next-scheme.md             # 演进方案
 │
 ├── docker-compose.yml             # 基础设施编排
 ├── Dockerfile                     # Python 服务镜像
@@ -222,11 +238,12 @@ SOC/
 | 步骤 | 模块 | 职责 |
 |------|------|------|
 | 1-2 | `SignalWatcher` / `signal_generator` | 实时监控告警 → 生成微信号 → NATS 发布 |
-| 3-5 | `DuckDB Sidecar` + `ocsf_mapper` | 按需查询 → OCSF 标准化 |
+| 3-5 | `DuckDB Sidecar` + `ocsf_mapper` | 按需查询 → 轻量级证据构建 |
 | 6 | `readiness` | 数据质量门控（覆盖度/完整性/时序/唯一性） |
 | 7 | `agent_team` | LLM 多Agent研判（分诊 → 攻击链 → 报告草稿） |
 | 8 | `verifier` | 复核校验（evidence_ref/raw_ref/lineage_id 溯源） |
 | 9 | `report_generator` + `dashboard` | 报告生成 + 可视化展示 |
+| — | `MonitorEmitter` → `monitor_dashboard` | 全链路监控事件实时展示 |
 
 ## Agent Team 研判
 

@@ -26,13 +26,14 @@
 
 在本项目中的角色：Client ↔ Server 之间**所有**消息通信的唯一通道。选择 NATS 而非 RabbitMQ/Kafka 的原因：极简部署（单个二进制）、低延迟、原生 JetStream 持久化。
 
-**本项目定义的 3 个 Stream/Subject：**
+**本项目定义的 4 个 Stream/Subject：**
 
 | Subject | 方向 | 内容 |
 |---------|------|------|
 | `soc.signals.{node_id}` | Client → Server | 微信号 |
 | `soc.query.requests` | Server → Client | DuckDB 查询请求 |
 | `soc.query.results` | Client → Server | 查询结果（轻量级证据） |
+| `soc.monitor.events` | All → Monitor | 全链路监控事件（核心Pub/Sub） |
 
 ### FastAPI + Uvicorn
 
@@ -273,6 +274,20 @@ CMD ["python", "MVP/main.py"]
 4. **复核结果卡片** — 通过/未通过、发现的问题
 5. **完整研判报告卡片** — Markdown 渲染
 
+### Monitor Dashboard (`server/monitor_dashboard.py`)
+
+| 属性 | 说明 |
+|------|------|
+| **版本** | >= 1.28.0 |
+| **端口** | 8502 |
+| **刷新** | streamlit-autorefresh (每2秒) |
+
+实时监控全链路事件流：
+- **Client 事件**: 信号发送 → 查询接收 → 查询执行 → 结果发送
+- **Server 事件**: 信号接收 → 查询下发 → 结果接收 → 证据保存
+- 双列面板布局，顶栏显示 NATS 连接状态和事件总数
+- 自检按钮验证事件管道
+
 ---
 
 ## 8. 关键技术版本汇总
@@ -286,6 +301,7 @@ Uvicorn            0.24+
 Anthropic          0.40+
 OpenSearch-py      2.4+
 Streamlit          1.28+
+streamlit-autorefresh 1.0+
 Pydantic           2.5+
 aiohttp            3.9+
 httpx              0.25+
@@ -319,7 +335,8 @@ NATS Server        2.10
 
 ### NATS 主题
 ```
-soc.signals.{node_id}     → 微信号，每个边缘节点独立主题
-soc.query.requests        → 查询请求，所有节点共享
-soc.query.results         → 查询结果，所有节点共享
+soc.signals.{node_id}     → 微信号，每个边缘节点独立主题 (JetStream)
+soc.query.requests        → 查询请求，所有节点共享 (JetStream)
+soc.query.results         → 查询结果，所有节点共享 (JetStream)
+soc.monitor.events        → 监控事件，best-effort 发布 (Core Pub/Sub)
 ```

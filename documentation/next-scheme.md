@@ -6,11 +6,21 @@
 
 ## 方向一：组件可观测化（端口化 + 监控面板）
 
-### 目标
+### 当前进展
 
-当前每个组件只在终端打印日志，无法结构化监控。目标是每个组件暴露 HTTP 端口，提供实时状态查询，然后用终端面板或 Web 面板统一展示。
+**已完成：**
+- ✅ Monitor Dashboard (`monitor_dashboard.py`) 已上线，运行在 :8502
+- ✅ 所有组件通过 `MonitorEmitter`（`common/monitor_events.py`）发布结构化事件到 `soc.monitor.events`（NATS Core Pub/Sub）
+- ✅ 8 种事件类型覆盖全链路：signal.sent/received → query.sent/received/executed → result.sent/received → evidence.saved
+- ✅ `nats_utils.py` 提供统一的 NATS 连接/订阅/ACK 工具
 
-### 端口规划
+**当前方案采用了 NATS Pub/Sub 而非 HTTP 端口轮询**，优势是无需为每个组件分配端口，事件天然解耦。
+
+### 目标（更新）
+
+在现有 NATS 监控事件基础上，进一步增强：每个组件暴露 HTTP 端口提供结构化状态查询（与 NATS 事件互补：NATS 用于实时事件流，HTTP 用于按需状态快照）。
+
+### 端口规划（在原基础上更新）
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -143,7 +153,16 @@ await site.start()
 
 ### 监控面板
 
-**方案 A: 终端面板（`rich` 库）**
+**当前方案: Streamlit Monitor Dashboard (:8502) — 已实现**
+
+基于 NATS Core Pub/Sub 的实时监控面板，替代了原计划中的 `rich` 终端面板方案：
+- `st.cache_resource` 保持 NATS 连接单例
+- 后台线程持续收集事件到 `deque(maxlen=1000)`
+- `streamlit-autorefresh` 每 2 秒自动刷新
+- 双列布局（Client 事件 / Server 事件）
+- 自检按钮验证事件管道
+
+**备选方案 A: 终端面板（`rich` 库）— 未实现，保留为备选**
 
 ```python
 from rich.console import Console
@@ -188,15 +207,18 @@ layout["body"].split_row(
 
 在现有 Dashboard 基础上加一个 Monitor Tab，用 `st.metric` 网格展示组件状态，通过 `requests` 轮询各组件端口。
 
-### 需要改动的文件
+### 需要改动的文件（Phase 1: HTTP 端点）
 
 | 文件 | 改动 |
 |------|------|
-| `MVP/client/client_app.py` | SignalWatcher 和 Sidecar 各加 aiohttp 端点 |
-| `MVP/server/server_app.py` | SignalListener 和 ResultListener 各加端点 |
+| `MVP/client/signal_watcher.py` | 加 aiohttp 端点暴露监控状态 |
+| `MVP/client/duckdb_sidecar.py` | 加 aiohttp 端点暴露查询统计 |
+| `MVP/server/signal_listener.py` | 加 aiohttp 端点暴露信令统计 |
+| `MVP/server/query_result_listener.py` | 加 aiohttp 端点暴露结果统计 |
 | `MVP/server/agent_team.py` | 加 HTTP 端点暴露研判结果 |
 | `MVP/config.py` | 新增端口配置项 |
-| 新建 `MVP/server/monitor.py` | 终端面板程序 |
+
+**注意:** Monitor Dashboard (`monitor_dashboard.py`) 和 MonitorEmitter (`monitor_events.py`) 已在 Phase 0 完成，不再需要新建 `monitor.py`。
 
 ### 风险与注意
 
@@ -302,10 +324,10 @@ wazuh_logs/
 
 | 文件 | 改动 | 工作量 |
 |------|------|--------|
-| `MVP/client/client_app.py` | `DEFAULT_NODE_ID` 改为从环境变量读取 | 2 行 |
+| `MVP/config.py` | `DEFAULT_NODE_ID` 已支持从环境变量读取 | ✅ 已完成 |
 | `MVP/client/client_app.py` | `_build_sql()` 增加 `WHERE agent.name = ?` | 5 行 |
 | `MVP/client/client_app.py` | 端口从环境变量读取，自动分配 | 5 行 |
-| `MVP/client/client_app.py` | 多 Client 共享同一个 `alerts.json` 时，NATS consumer 名唯一化 | 已支持 |
+| `MVP/client/client_app.py` | 多 Client 共享同一个 `alerts.json` 时，NATS consumer 名唯一化 | ✅ 已支持 |
 | `MVP/metadata.json` | 增加 `node-web-02`、`node-db-01` 的数据源条目 | 10 行 |
 | `scripts/trigger_test.sh` | 支持 `--node-id` 参数注入不同节点告警 | 15 行 |
 | 新建 `scripts/run_multi_client.sh` | 一键启动 3 个 Client | 30 行 |
@@ -354,10 +376,17 @@ Client-C 终端:
 ## 实施优先级
 
 ```
-Phase 1: 基础可观测
-  ├─ SignalWatcher HTTP 端点
-  ├─ Sidecar HTTP 端点
-  └─ 终端监控面板 (rich)
+Phase 0: 基础可观测 ✅ 已完成
+  ├─ ✅ MonitorEmitter (monitor_events.py) — 8 种事件类型
+  ├─ ✅ NATS 共享工具 (nats_utils.py) — Stream/订阅/ACK
+  ├─ ✅ Monitor Dashboard (:8502) — 实时事件面板
+  └─ ✅ streamlit-autorefresh — 每 2 秒自动刷新
+
+Phase 1: HTTP 状态端点（增强可观测）
+  ├─ SignalWatcher HTTP 端点 (:81xx)
+  ├─ Sidecar HTTP 端点 (:81x1)
+  ├─ Server 端组件 HTTP 端点 (:8001-8003)
+  └─ Health Aggregator (:8099)
 
 Phase 2: 多 Client 并行
   ├─ node_id 环境变量配置
@@ -365,19 +394,19 @@ Phase 2: 多 Client 并行
   └─ trigger_test.sh 支持多节点
 
 Phase 3: 完善可观测
-  ├─ Server 端组件 HTTP 端点
   ├─ Agent Team HTTP 端点
-  └─ Web 监控面板 (Streamlit Tab)
+  └─ Web 监控面板增强 (Streamlit Tab)
 
 Phase 4: 生产化
   ├─ 独立数据源目录
-  ├─ Health Aggregator (:8099)
-  └─ 告警通知集成
+  ├─ 告警通知集成
+  └─ 持久化配置 (client.keys)
 ```
 
 ## 兼容性说明
 
-两个方向**互不冲突**，可以独立实施：
-- 方向一（端口化）不改变数据流，只在现有组件上附加 HTTP 端点
-- 方向二（多 Client）复用现有 NATS 主题和 consumer 机制，只是增加实例数
-- 方向一完成后，方向二的多 Client 监控可以直接看到效果
+三个方向**互不冲突**，可以独立实施：
+- Phase 0（完成）：MonitorEmitter + Monitor Dashboard 通过 NATS Core Pub/Sub 工作，不改变现有数据流
+- Phase 1（HTTP 端点）：在现有组件上附加 HTTP 端点，与 NATS 事件互补（NATS 用于实时流，HTTP 用于按需快照）
+- Phase 2（多 Client）：复用现有 NATS 主题和 consumer 机制，只是增加实例数
+- Phase 0 的 Monitor Dashboard 可以直接展示 Phase 2 多 Client 的效果

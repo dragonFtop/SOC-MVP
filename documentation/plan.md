@@ -2,28 +2,9 @@
 ---
 
 ## 一、数据来源层（边缘）
-1. 边缘节点（node-web-01）产生 **nginx.log**、**/alerts.json**、Wazuh 告警/本地日志
+1. 边缘节点（node-web-01）产生 **nginx.log**、**alerts.json**、Wazuh 告警/本地日志
 
-## 二、边缘采集 & 轻量级信令生成# MVP/server/readiness.py 关键改动
-
-def calculate_readiness(timestamp=None):
-    # ... 现有代码 ...
-
-    # ======================
-    # 【增强】时序一致性检查
-    # ======================
-    timestamps = [ev["timestamp"] for ev in evidence if ev.get("timestamp")]
-    if len(timestamps) >= 2:
-        # 检查时间是否有序
-        sorted_ts = sorted(timestamps)
-        if timestamps != sorted_ts:
-            score -= 10  # 时序乱序扣分
-
-        # 检查时间跨度是否合理（>=30秒）
-        from datetime import datetime
-        try:
-            start = datetime.fromisoformat(sorted_ts[0])
-            end = datetime.fromisoformat(sorted_ts[-1
+## 二、边缘采集 & 轻量级信令生成
 2. **Wazuh Agent**：边缘侧异常检测、规则命中
 3. **Micro‑signal生成（signal.json）**：
    - 字段：signal_id、node_id、rule_id、src_ip、event_time、suggested_logs
@@ -71,7 +52,22 @@ def calculate_readiness(timestamp=None):
 
 ## 九、可视化展示
 13. **Dashboard**：
-    - 展示：Case、Evidence、时间线、审批、verify_result、report、lineage_status
+    - 研判面板（:8501）：Case、Evidence、时间线、审批、verify_result、report
     - 生成 Markdown 报告
+14. **Monitor Dashboard**：
+    - 实时监控面板（:8502）：全链路事件流实时展示
+    - Client 事件：信号发送/查询接收/查询执行/结果发送
+    - Server 事件：信号接收/查询下发/结果接收/证据保存
+
+## 十、全链路监控
+15. **MonitorEmitter**（`common/monitor_events.py`）：
+    - 所有组件发布轻量级事件到 `soc.monitor.events`（NATS Core Pub/Sub）
+    - 8 种事件类型覆盖 Client/Server 全链路
+    - best-effort 发布，不影响主流程
+16. **NATS 共享工具**（`common/nats_utils.py`）：
+    - `ensure_stream()` — Stream 创建（幂等，含默认限制）
+    - `subscribe_safe()` — 安全订阅（自动处理 Stream 不存在 + Consumer 残留）
+    - `safe_ack()` — 带重试限制的 ACK（超限自动丢弃防死信）
+    - `MAX_DELIVERY_ATTEMPTS = 3` — 最大投递次数
 
 ---

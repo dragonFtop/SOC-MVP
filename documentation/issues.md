@@ -298,7 +298,7 @@ docker restart nats
 **原因:** 上次进程异常退出时 durable consumer 未清理，残留在 NATS 服务器上。
 
 **代码中已处理的解决方案:**
-`client_app.py` 和 `server_app.py` 中的 `_subscribe_safe()` 方法会在订阅失败时自动尝试删除残留 consumer 后重试。
+`common/nats_utils.py` 中的 `subscribe_safe()` 函数会在订阅失败时自动尝试删除残留 consumer 后重试。所有模块（SignalListener、DuckDBQueryEngine、QueryResultListener）统一使用该工具。
 
 **手动清理:**
 ```bash
@@ -308,8 +308,8 @@ docker exec nats nats consumer ls QUERY_REQUESTS
 docker exec nats nats consumer ls QUERY_RESULTS
 
 # 删除指定 consumer
-docker exec nats nats consumer rm SIGNALS signal-listener-server
-docker exec nats nats consumer rm QUERY_REQUESTS sidecar-node-web-01
+docker exec nats nats consumer rm SIGNALS signal-listener
+docker exec nats nats consumer rm QUERY_REQUESTS duckdb-sidecar-node-web-01
 docker exec nats nats consumer rm QUERY_RESULTS query-result-listener
 ```
 
@@ -326,10 +326,26 @@ docker exec nats nats stream ls
 docker exec nats nats stream info SIGNALS
 
 # 3. 检查 Consumer 是否有 pending 消息
-docker exec nats nats consumer info SIGNALS signal-listener-server
+docker exec nats nats consumer info SIGNALS signal-listener
 
 # 4. 如果 pending 消息很多，说明 Server 没在处理
 #    检查 Server 是否在运行，是否有错误日志
+```
+
+### 4.4 监控事件未显示
+
+**现象:** Monitor Dashboard (:8502) 无事件展示。
+
+**原因:** Monitor 事件通过 NATS Core Pub/Sub（非 JetStream）发布，无持久化。
+
+**排查:**
+```bash
+# 确认 Monitor Dashboard 正在运行
+curl -s http://localhost:8502 | head -5
+
+# 使用自检按钮验证管道（在 Dashboard 页面点击"自检"）
+# 或手动发布测试事件
+docker exec nats nats pub soc.monitor.events '{"event_id":"test","event_type":"signal.sent"}'
 ```
 
 ---

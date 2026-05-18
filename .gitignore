@@ -4,5 +4,6 @@ __pycache__/
 
 MVP/client/signals_fallback.json
 MVP/outputs/
+wazuh_logs/
 
 .env

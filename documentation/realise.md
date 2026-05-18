@@ -7,32 +7,33 @@
 ## 整体架构
 
 ```
-┌────────────────────── 宿主机 ──────────────────────────┐
-│                                                        │
-│  Wazuh Agent (系统服务)                                 │
-│    │ logcollector 采集 journald/auth.log/syslog         │
-│    │ agentd 连接 Manager:1514                          │
-│    ▼                                                   │
-│  ┌──────────────────────────────────────────────┐      │
-│  │ Docker: wazuh-manager                        │      │
-│  │   remoted → analysisd (7067规则) → alerts.json│      │
-│  │   bind mount: wazuh_logs/ ← /var/ossec/logs/ │      │
-│  └──────────────────────────────────────────────┘      │
-│                                                        │
-│  ┌──────────────┐          ┌──────────────┐           │
-│  │ Client App   │──NATS──>│ Server App   │           │
-│  │ (client_app) │<──NATS──│ (server_app) │           │
-│  │              │          │              │           │
-│  │ SignalWatcher│          │ SignalListener│          │
-│  │ DuckDB       │          │ QueryGateway  │          │
-│  └──────────────┘          │ ResultListener│          │
-│                            │ Dashboard     │           │
-│                            │ AgentTeam     │           │
-│                            └──────────────┘           │
-│                                                        │
-│  Docker: opensearch (证据底座)                          │
-│  Docker: nats (消息总线)                                │
-└────────────────────────────────────────────────────────┘
+┌────────────────────── 宿主机 ─────────────────────────────────────┐
+│                                                                   │
+│  Wazuh Agent (系统服务)                                            │
+│    │ logcollector 采集 journald/auth.log/syslog                    │
+│    │ agentd 连接 Manager:1514                                     │
+│    ▼                                                              │
+│  ┌──────────────────────────────────────────────────┐            │
+│  │ Docker: wazuh-manager                            │            │
+│  │   remoted → analysisd (7067规则) → alerts.json    │            │
+│  │   bind mount: wazuh_logs/ ← /var/ossec/logs/     │            │
+│  └──────────────────────────────────────────────────┘            │
+│                                                                   │
+│  ┌──────────────┐    NATS     ┌──────────────────────┐           │
+│  │ Client App   │──JetStream─>│ Server App            │           │
+│  │ (client_app) │<─JetStream──│ (server_app)          │           │
+│  │              │             │                       │           │
+│  │ SignalWatcher│    Core     │ SignalListener        │           │
+│  │ DuckDBEngine │──Pub/Sub──>│ QueryResultListener   │           │
+│  │              │  (monitor  │ QueryGateway :8000    │           │
+│  └──────────────┘   events)  │ Dashboard :8501       │           │
+│                              │ Monitor Dashboard :8502│          │
+│                              │ AgentTeam              │           │
+│                              └──────────────────────┘           │
+│                                                                   │
+│  Docker: opensearch (证据底座)                                     │
+│  Docker: nats (消息总线)                                           │
+└───────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -86,7 +87,8 @@ Agent (agentd) ──TCP:1514──> Manager (remoted) ──> analysisd ──>
 
 ## 模块 2: Client — SignalWatcher（实时信号监控）
 
-**文件**: `MVP/client/client_app.py` → `SignalWatcher` 类
+**文件**: `MVP/client/signal_watcher.py` → `SignalWatcher` 类
+**入口**: `MVP/client/client_app.py` → 组装 `SignalWatcher` + `DuckDBQueryEngine`
 
 ### 2.1 核心逻辑
 
@@ -145,20 +147,21 @@ Agent (agentd) ──TCP:1514──> Manager (remoted) ──> analysisd ──>
 
 ### 2.3 运行模式
 
-`SignalWatcher.run_forever()` 是一个无限循环的 asyncio 协程，与 `SidecarQueryEngine.start()` 并发运行在同一个事件循环中：
+`SignalWatcher.run_forever()` 是一个无限循环的 asyncio 协程，与 `DuckDBQueryEngine.start_listening()` 并发运行在同一个事件循环中：
 
 ```python
-sidecar_task = asyncio.create_task(sidecar.start())
-watcher_task = asyncio.create_task(watcher.run_forever())
-done, pending = await asyncio.wait([sidecar_task, watcher_task],
-                                    return_when=asyncio.FIRST_COMPLETED)
+sidecar_task = asyncio.create_task(sidecar.start_listening(), name="sidecar")
+watcher_task = asyncio.create_task(watcher.run_forever(), name="watcher")
+_, pending = await asyncio.wait([sidecar_task, watcher_task],
+                                 return_when=asyncio.FIRST_COMPLETED)
 ```
 
 ---
 
-## 模块 3: Client — SidecarQueryEngine（边缘按需查询）
+## 模块 3: Client — DuckDBQueryEngine（边缘按需查询）
 
-**文件**: `MVP/client/client_app.py` → `SidecarQueryEngine` 类
+**文件**: `MVP/client/duckdb_sidecar.py` → `DuckDBQueryEngine` 类
+**入口**: `MVP/client/client_app.py` → 组装
 
 ### 3.1 查询处理流程
 
@@ -202,16 +205,19 @@ sql += f" LIMIT {limit}"
 
 ### 3.4 错误处理
 
-- 查询失败时向 `soc.query.results.error` 发布错误消息
-- `_subscribe_safe()` 自动清理 NATS 残留 consumer
+- 文件竞态（Wazuh 写入与 DuckDB 读取冲突）自动重试最多 2 次
+- `safe_ack()` 带重试限制的 ACK — 超限自动丢弃防死信阻塞
+- `subscribe_safe()` 自动处理 Stream 创建 + Consumer 残留清理
 
 ---
 
 ## 模块 4: Server — SignalListener + ResultListener
 
-**文件**: `MVP/server/server_app.py` → `ServerSignalListener` + `QueryResultListener` 类
+**文件**: `MVP/server/signal_listener.py` → `SignalListener` 类
+**文件**: `MVP/server/query_result_listener.py` → `QueryResultListener` 类
+**入口**: `MVP/server/server_app.py` → 组装
 
-### 4.1 ServerSignalListener
+### 4.1 SignalListener
 
 ```
 NATS soc.signals.* (通配符订阅)
@@ -246,12 +252,20 @@ handle_result(msg)
 ### 4.3 并发模型
 
 ```python
+# 3 个独立线程（阻塞服务）
+gateway_thread = threading.Thread(target=run_gateway, daemon=True)
+dashboard_thread = threading.Thread(target=_launch_dashboard, daemon=True)
+monitor_thread = threading.Thread(target=_launch_monitor, daemon=True)
+
+# 2 个 asyncio Task（共享事件循环）
 signal_task = asyncio.create_task(signal_listener.listen_forever())
 result_task = asyncio.create_task(result_listener.listen_forever())
 await asyncio.wait([signal_task, result_task], return_when=FIRST_COMPLETED)
 ```
 
-两个 Listener 是独立的 asyncio Task，共享同一个事件循环。
+- Query Gateway、Dashboard、Monitor Dashboard 各自在独立线程中运行
+- 两个 Listener 是独立的 asyncio Task，共享同一个事件循环
+- Monitor Dashboard（:8502）通过 NATS Core Pub/Sub 订阅 `soc.monitor.events` 实时展示全链路事件
 
 ---
 
@@ -529,7 +543,8 @@ def map_wazuh_to_ocsf(evidence_item: dict) -> dict:
 
 ## 模块 10: Dashboard（可视化面板）
 
-**文件**: `MVP/server/dashboard.py` (Streamlit)
+**文件**: `MVP/server/dashboard.py` (研判面板, Streamlit :8501)
+**文件**: `MVP/server/monitor_dashboard.py` (实时监控面板, Streamlit :8502)
 
 ### 10.1 页面结构
 
@@ -557,3 +572,103 @@ st.container(border=True)            # 卡片 5: 完整研判报告
 - `agent_result.json` 或 `agent_draft.json` → 卡片 3
 - `verifier_result.json` → 卡片 4
 - `report.md` → 卡片 5（Markdown 渲染）
+
+### 10.3 Monitor Dashboard（实时监控面板）
+
+**文件**: `MVP/server/monitor_dashboard.py`
+
+通过 NATS 核心 Pub/Sub 订阅 `soc.monitor.events`，实时展示全链路事件：
+
+```
+页面结构:
+┌─ 顶栏 ───────────────────────────────────────────┐
+│ NATS 连接状态 | 事件总数 | Client/Server 分类计数   │
+└───────────────────────────────────────────────────┘
+┌─ 左列 (Client 事件) ──┐ ┌─ 右列 (Server 事件) ──┐
+│ 📤 信号已发送          │ │ 📥 信号已接收          │
+│ 📥 查询已接收          │ │ 📤 查询已下发          │
+│ 🔍 查询已执行          │ │ 📥 结果已接收          │
+│ 📤 结果已发送          │ │ 💾 证据已保存          │
+└────────────────────────┘ └────────────────────────┘
+┌─ 实时事件日志 (最新50条, 可折叠) ──────────────────┐
+└───────────────────────────────────────────────────┘
+```
+
+- 使用 `st.cache_resource` 保持 NATS 连接单例跨 Streamlit re-run 存活
+- 后台线程持续收集事件到 `deque(maxlen=1000)`
+- `streamlit-autorefresh` 每 2 秒自动刷新面板
+- 自检按钮通过 NATS 发送测试事件验证管道
+
+---
+
+## 模块 11: Monitor Emitter（监控事件发射器）
+
+**文件**: `MVP/common/monitor_events.py` → `MonitorEmitter` 类
+
+### 11.1 设计原则
+
+所有 Client/Server 组件通过 `MonitorEmitter` 发布轻量级结构化事件到 NATS 核心 Pub/Sub（非 JetStream），供 Monitor Dashboard 消费：
+- **best-effort** — 发布失败不影响主流程
+- **即发即弃** — 无需 ACK，无需持久化
+- **轻量级** — 每个事件仅包含关键元数据
+
+### 11.2 8 种事件类型
+
+| 事件类型 | 来源 | 发射组件 |
+|---------|------|---------|
+| `signal.sent` | Client | SignalWatcher |
+| `signal.received` | Server | SignalListener |
+| `query.sent` | Server | SignalListener |
+| `query.received` | Client | DuckDBQueryEngine |
+| `query.executed` | Client | DuckDBQueryEngine |
+| `result.sent` | Client | DuckDBQueryEngine |
+| `result.received` | Server | QueryResultListener |
+| `evidence.saved` | Server | QueryResultListener |
+
+### 11.3 事件结构
+
+```json
+{
+  "event_id": "evt-a1b2c3d4",
+  "event_type": "signal.sent",
+  "source": "client",
+  "component": "SignalWatcher",
+  "node_id": "node-web-01",
+  "timestamp": "20:43:47",
+  "payload": {
+    "signal_id": "sig-bbbe6f60",
+    "rule_id": "5503",
+    "rule_level": 5,
+    "node_id": "node-web-01"
+  }
+}
+```
+
+---
+
+## 模块 12: NATS 共享工具
+
+**文件**: `MVP/common/nats_utils.py`
+
+### 12.1 提供的工具函数
+
+| 函数 | 职责 |
+|------|------|
+| `get_nats()` | 延迟导入 nats 模块（使 NATS 成为可选依赖） |
+| `ensure_stream(js, name, subjects)` | 创建 JetStream Stream（幂等，带默认限制） |
+| `subscribe_safe(js, subject, durable)` | 安全订阅（自动处理 Stream 不存在、Consumer 残留） |
+| `safe_ack(msg, on_success)` | 带重试限制的 ACK 处理（超限自动丢弃防死信） |
+
+### 12.2 Stream 默认配置
+
+```python
+STREAM_CONFIG = {
+    "max_age":  24 * 3600,          # 24 小时后自动过期
+    "max_bytes": 500 * 1024 * 1024, # 单 Stream 最多 500 MB
+}
+MAX_DELIVERY_ATTEMPTS = 3           # 每条消息最大重试次数
+```
+
+### 12.3 Docker 文件竞态处理
+
+`DuckDBQueryEngine.execute_query()` 遇到 "Malformed JSON" 或 "unexpected end of data" 错误时自动重试（最多 2 次），处理 Wazuh Manager 写入与 DuckDB 读取的竞态条件。
