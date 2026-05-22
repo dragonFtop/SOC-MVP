@@ -10,31 +10,29 @@ AI-SOC (Artificial Intelligence Security Operations Center) 是一个基于**数
 ┌─────────────────────────────────────────────────────────────┐
 │                    终端 2: Client (边缘侧)                    │
 │                                                             │
-│  Wazuh Agent ──► Wazuh Manager ──► alerts.json (NDJSON)     │
-│                                       │                     │
-│                              SignalWatcher (实时监控)        │
-│                                       │                     │
-│                              DuckDB Sidecar (按需查询)       │
-│                                       │                     │
-└───────────────────────────────────────┼─────────────────────┘
-                                        │
-                                 NATS (JetStream + Core)
-                                        │
-┌───────────────────────────────────────┼─────────────────────┐
+│  /var/log/auth.log (syslog)                                 │
+│         │                                                   │
+│  DetectionEngine (YAML规则 + DuckDB本地检测)                  │
+│         │                                                   │
+│  DuckDB Sidecar (按需查询/证据提取)                           │
+│         │                                                   │
+└─────────┼───────────────────────────────────────────────────┘
+          │
+   NATS (JetStream + Core)
+          │
+┌─────────┼───────────────────────────────────────────────────┐
 │                    终端 1: Server (中心侧)                    │
-│                                       │                     │
-│                              Signal Listener (信令监听)      │
-│                                       │                     │
-│                              Query Result Listener (结果接收) │
-│                                       │                     │
-│                              Query Gateway (FastAPI :8000)   │
-│                                       │                     │
-│                              Agent Team (LLM 多Agent研判)    │
-│                                       │                     │
-│                              Verifier (复核校验)             │
-│                                       │                     │
-│                              Dashboard (Streamlit :8501)     │
-│                              Monitor Dashboard (:8502)       │
+│         │                                                   │
+│  Signal Listener (信令监听)                                  │
+│         │                                                   │
+│  Query Gateway (FastAPI :8000)                              │
+│         │                                                   │
+│  Agent Team (LLM 多Agent研判)                                │
+│         │                                                   │
+│  Verifier (复核校验)                                         │
+│         │                                                   │
+│  Dashboard (Streamlit :8501)                                │
+│  Monitor Dashboard (:8502)                                  │
 │                                                             │
 │  存储层: OpenSearch + DuckDB                                 │
 └─────────────────────────────────────────────────────────────┘
@@ -43,18 +41,22 @@ AI-SOC (Artificial Intelligence Security Operations Center) 是一个基于**数
 ### 实时数据流
 
 ```
-Wazuh Agent 检测异常
-  → Wazuh Manager 追加告警到 alerts.json (NDJSON)
-  → SignalWatcher 检测新行 (每2秒轮询)
+系统写入 /var/log/auth.log
+  → DetectionEngine tail + 解析 (每2秒轮询)
+  → DuckDB 内存表写入 → YAML 规则 SQL threshold 检测
   → 生成轻量级微信号 → NATS soc.signals.*
   → Server Signal Listener 接收 → 触发按需查询
   → NATS soc.query.requests
-  → Client DuckDB Sidecar 执行本地查询 → 只返回关键证据字段
+  → Client DuckDB Sidecar 查询 auth_events 内存表 → 只返回关键证据
   → NATS soc.query.results
-  → Server 接收 → 持久化
+  → Server 接收 → OCSF 标准化 → OpenSearch 持久化 → 研判 → 报告
 
-所有组件通过 MonitorEmitter 发布监控事件:
-  → NATS soc.monitor.events (核心Pub/Sub)
+兼容旧模式 (Wazuh alerts.json):
+  → SignalWatcher 监控 wazuh_logs/alerts/alerts.json
+  → 其余链路同上
+
+全链路监控:
+  → MonitorEmitter → NATS soc.monitor.events (Core Pub/Sub)
   → Monitor Dashboard (:8502) 实时展示
 ```
 
@@ -81,7 +83,7 @@ bash scripts/run_server.sh
 ```
 
 该脚本会自动：
-- 检查并启动 Docker 基础设施（OpenSearch、NATS、Wazuh Manager）
+- 检查并启动 Docker 基础设施（OpenSearch、NATS）
 - 启动 Query Gateway（FastAPI，端口 8000）
 - 启动 Signal Listener（监听 NATS 信令）
 - 启动 Query Result Listener（监听查询结果）
@@ -95,9 +97,9 @@ bash scripts/run_client.sh
 
 该脚本会自动：
 - 检查 NATS 连接
-- 检查 Wazuh 告警数据源
 - 启动 DuckDB Sidecar（监听查询请求）
-- 启动 SignalWatcher（实时监控新告警）
+- 启动 DetectionEngine（实时监控 auth.log）
+- 启动 SignalWatcher（监控告警数据源）
 - 发布初始信号批次
 
 两个终端窗口会实时展示 Client ↔ Server 之间的交互过程。
@@ -106,32 +108,26 @@ bash scripts/run_client.sh
 
 提供两种测试方式，在 Client 和 Server 都运行后使用：
 
-**方式一：直接注入 alerts.json（快速测试 SOC 内部链路）**
+**方式一：直接操作 auth.log（快速测试 SOC 全链路）**
 
-向告警文件追加模拟 JSON 行，SignalWatcher 在 2 秒内检测到：
+执行真实系统操作或 logger 模拟，写入 /var/log/auth.log，DetectionEngine 在 2 秒内检测到：
+
+```bash
+bash scripts/trigger_authlog.sh ssh          # SSH 暴力破解 (PTY 发送错误密码)
+bash scripts/trigger_authlog.sh all          # 依次执行 SSH + sudo
+bash scripts/trigger_authlog.sh sudo 3       # 3 次错误 sudo 尝试
+```
+
+测试链路：`系统操作 → auth.log → DetectionEngine → 信号 → NATS → Server → 查询 → 证据 → 研判`
+
+**方式二：直接注入 alerts.json（兼容旧告警文件测试）**
 
 ```bash
 bash scripts/trigger_test.sh              # 注入 5 条 SSH 暴力破解告警 (5503)
 bash scripts/trigger_test.sh 3 5710       # 注入 3 条端口扫描告警
-bash scripts/trigger_test.sh 2 random     # 随机规则
 ```
 
 测试链路：`alerts.json → SignalWatcher → 信号 → NATS → Server → 查询 → 证据 → 研判`
-
-**方式二：系统层真实操作（端到端测试，含 Wazuh Agent）**
-
-在系统中执行真实操作，产生 `auth.log` 日志，被 Wazuh Agent 捕获后触发全链路：
-
-```bash
-bash scripts/trigger_syslog.sh ssh        # SSH 暴力破解 (PTY 发送错误密码)
-bash scripts/trigger_syslog.sh su         # su/sudo 认证失败 + 提权尝试
-bash scripts/trigger_syslog.sh scan       # 端口扫描
-bash scripts/trigger_syslog.sh all        # 依次执行以上所有
-```
-
-测试链路：`系统操作 → /var/log/auth.log → Wazuh Agent → Manager → alerts.json → SignalWatcher → ...`
-
-支持的检测规则：`5503`(爆破)、`2501`(认证失败)、`5710`(扫描)、`5501`(登录)、`5502`(会话)、`5712`(侦查)、`5763`(提权)、`5715`(横向移动)
 
 ### 4. 停止
 
@@ -172,8 +168,8 @@ SOC/
 │   ├── run_client.sh              # 启动客户端（终端2）
 │   ├── stop_server.sh             # 停止服务端
 │   ├── stop_client.sh             # 停止客户端
-│   ├── trigger_test.sh            # 注入模拟告警，触发研判链路
-│   └── trigger_syslog.sh          # 系统层真实操作触发测试
+│   ├── trigger_authlog.sh         # 触发 auth.log 真实安全事件
+│   ├── trigger_test.sh            # 注入模拟告警 (兼容旧告警文件模式)
 │
 ├── MVP/
 │   ├── main.py                    # 单次分析入口（9步流水线）
@@ -181,9 +177,12 @@ SOC/
 │   ├── metadata.json              # 数据源注册表
 │   │
 │   ├── client/                    # 边缘侧模块
-│   │   ├── client_app.py          # 客户端统一入口（Sidecar + Watcher）
+│   │   ├── client_app.py          # 客户端统一入口（DetectionEngine + Sidecar）
+│   │   ├── detection_engine.py    # 本地检测引擎 (DetectionEngine)
+│   │   ├── detection_rules.yaml   # YAML 检测规则定义
+│   │   ├── log_parser.py          # auth.log syslog 解析器
 │   │   ├── duckdb_sidecar.py      # DuckDB 边缘查询引擎 (DuckDBQueryEngine)
-│   │   ├── signal_watcher.py      # 实时信号监控器 (SignalWatcher)
+│   │   ├── signal_watcher.py      # 实时信号监控器 (SignalWatcher, 兼容旧 Wazuh 模式)
 │   │   ├── signal_generator.py    # 微信号生成与 NATS 发布（批量模式）
 │   │   ├── local_gateway.py       # 本地 DuckDB 查询封装
 │   │   ├── evidence_builder.py    # 证据构建与固化
@@ -216,7 +215,7 @@ SOC/
 │           ├── verifier_result.json
 │           └── report.md
 │
-├── wazuh_logs/                    # Wazuh 日志挂载目录
+├── wazuh_logs/                    # 告警日志数据目录
 │   └── alerts/alerts.json        # 告警数据 (NDJSON)
 │
 ├── documentation/                 # 项目文档
@@ -237,8 +236,8 @@ SOC/
 
 | 步骤 | 模块 | 职责 |
 |------|------|------|
-| 1-2 | `SignalWatcher` / `signal_generator` | 实时监控告警 → 生成微信号 → NATS 发布 |
-| 3-5 | `DuckDB Sidecar` + `ocsf_mapper` | 按需查询 → 轻量级证据构建 |
+| 1-2 | `DetectionEngine` / `log_parser` | tail auth.log → 解析 → DuckDB 内存表 → YAML SQL 检测 → 信号 → NATS |
+| 3-5 | `DuckDB Sidecar` + `ocsf_mapper` | 按需查询 auth_events 内存表 → 轻量级证据 → OCSF 标准化 |
 | 6 | `readiness` | 数据质量门控（覆盖度/完整性/时序/唯一性） |
 | 7 | `agent_team` | LLM 多Agent研判（分诊 → 攻击链 → 报告草稿） |
 | 8 | `verifier` | 复核校验（evidence_ref/raw_ref/lineage_id 溯源） |
@@ -259,17 +258,25 @@ SOC/
 LLM 不可用时自动回退。覆盖 7 种事件类型：
 `brute_force` / `scanning` / `malware_detected` / `reconnaissance` / `privilege_escalation` / `lateral_movement` / `data_exfiltration`
 
-## 支持的检测规则
+## 本地检测规则 (detection_rules.yaml)
+
+| 规则ID | 类型 | 描述 | 严重度 |
+|--------|------|------|--------|
+| LOCAL_SSH_BRUTE_FORCE | brute_force | SSH 暴力破解 (5次/5分钟) | high |
+| LOCAL_SSH_SCAN | reconnaissance | SSH 扫描检测 (3次/2分钟) | medium |
+| LOCAL_SUDO_FAILURES | privilege_escalation | Sudo 认证失败 (3次/2分钟) | medium |
+| LOCAL_SU_FAILURES | privilege_escalation | Su 认证失败 (3次/2分钟) | medium |
+| LOCAL_SSH_ACCEPTED | normal | SSH 成功登录 (通知) | low |
+
+### 旧版告警规则 (兼容)
 
 | 规则ID | 类型 | 描述 |
 |--------|------|------|
 | 5503 | brute_force | SSH/RDP 暴力破解 |
 | 5710 | scanning | 端口扫描 |
-| 5501 | malware_detected | 恶意软件检测 |
 | 5712 | reconnaissance | 信息侦查 |
 | 5763 | privilege_escalation | 权限提升 |
 | 5715 | lateral_movement | 横向移动 |
-| 5502 | data_exfiltration | 数据外泄 |
 
 ## 配置说明
 
@@ -277,20 +284,23 @@ LLM 不可用时自动回退。覆盖 7 种事件类型：
 
 ```python
 # 数据路径
-WAZUH_LOGS_DIR       # Wazuh 日志目录
-ALERTS_JSON_PATH     # 告警数据文件路径
-OUTPUTS_DIR          # 分析结果输出目录
+AUTH_LOG_PATH         # 系统 auth.log 路径 (默认 /var/log/auth.log)
+WAZUH_LOGS_DIR        # 告警日志目录 (兼容旧模式)
+ALERTS_JSON_PATH      # 告警数据文件路径 (兼容旧模式)
+OUTPUTS_DIR           # 分析结果输出目录
+
+# 检测引擎
+DETECTION_RULES_PATH  # YAML 规则文件路径
+WATCH_INTERVAL        # auth.log 轮询间隔 (默认 2秒)
+EVENT_RETENTION_MINUTES # 内存中事件保留时间 (默认 60分钟)
 
 # 服务连接
-OPENSEARCH_HOST      # OpenSearch 地址 (默认 127.0.0.1:9200)
-NATS_SERVERS         # NATS 服务器列表
+OPENSEARCH_HOST       # OpenSearch 地址 (默认 127.0.0.1:9200)
+NATS_SERVERS          # NATS 服务器列表
 
 # LLM 分析
-ANTHROPIC_API_KEY    # 从环境变量 ANTHROPIC_AUTH_TOKEN 读取
-ANTHROPIC_MODEL      # 模型名称 (默认 claude-sonnet-4-6)
-
-# 实时监控
-WATCH_INTERVAL       # 告警文件轮询间隔 (默认 2秒, 在 client_app.py 中)
+ANTHROPIC_API_KEY     # 从环境变量 ANTHROPIC_AUTH_TOKEN 读取
+ANTHROPIC_MODEL       # 模型名称 (默认 claude-sonnet-4-6)
 ```
 
 数据源注册在 `MVP/metadata.json` 中，支持多节点、多数据源的灵活配置。
@@ -303,8 +313,10 @@ WATCH_INTERVAL       # 告警文件轮询间隔 (默认 2秒, 在 client_app.py 
 | LLM API 调用失败 | 检查 `ANTHROPIC_AUTH_TOKEN` 环境变量，系统自动回退规则引擎 |
 | OpenSearch 连接失败 | `docker compose up -d opensearch`，数据已本地保存可稍后重试 |
 | NATS 连接失败 | 确认 Docker 基础设施已启动，先运行 `scripts/run_server.sh` |
-| DuckDB 查询失败 | 确认 `wazuh_logs/alerts/alerts.json` 存在且为 NDJSON 格式 |
-| 无实时信号 | 确认 Wazuh Agent 已连接 Manager，alerts.json 有新告警写入 |
+| auth.log 不可读 | `sudo chmod o+r /var/log/auth.log`，确保 DetectionEngine 有读取权限 |
+| 无实时信号 | 确认 auth.log 有新的安全事件写入，运行 `scripts/trigger_authlog.sh ssh` 测试 |
+| DuckDB 查询失败 | 确认 DetectionEngine 已启动并解析了 auth.log 事件 |
+| 检测规则未触发 | 检查 `MVP/client/detection_rules.yaml`，确保 threshold 条件满足 |
 
 ## 许可证
 

@@ -1,6 +1,15 @@
 [
   {
     "node_id": "node-web-01",
+    "source_name": "auth_log",
+    "source_type": "syslog",
+    "local_path": "/var/log/auth.log",
+    "format": "syslog",
+    "query_engine": "duckdb-sidecar-authlog",
+    "retention_days": 7
+  },
+  {
+    "node_id": "node-web-01",
     "source_name": "nginx_access",
     "source_type": "web_log",
     "local_path": "./data/node-web-01/nginx_access.json",

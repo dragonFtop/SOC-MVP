@@ -9,21 +9,17 @@
 ```
 ┌────────────────────── 宿主机 ─────────────────────────────────────┐
 │                                                                   │
-│  Wazuh Agent (系统服务)                                            │
-│    │ logcollector 采集 journald/auth.log/syslog                    │
-│    │ agentd 连接 Manager:1514                                     │
+│  DetectionEngine (client_app)                                      │
+│    │ tail + 解析 /var/log/auth.log                                 │
+│    │ YAML 规则本地检测 (DuckDB SQL threshold)                       │
 │    ▼                                                              │
-│  ┌──────────────────────────────────────────────────┐            │
-│  │ Docker: wazuh-manager                            │            │
-│  │   remoted → analysisd (7067规则) → alerts.json    │            │
-│  │   bind mount: wazuh_logs/ ← /var/ossec/logs/     │            │
-│  └──────────────────────────────────────────────────┘            │
+│  NATS JetStream 信令 → Server                                      │
 │                                                                   │
 │  ┌──────────────┐    NATS     ┌──────────────────────┐           │
 │  │ Client App   │──JetStream─>│ Server App            │           │
 │  │ (client_app) │<─JetStream──│ (server_app)          │           │
 │  │              │             │                       │           │
-│  │ SignalWatcher│    Core     │ SignalListener        │           │
+│  │ DetectionEng │    Core     │ SignalListener        │           │
 │  │ DuckDBEngine │──Pub/Sub──>│ QueryResultListener   │           │
 │  │              │  (monitor  │ QueryGateway :8000    │           │
 │  └──────────────┘   events)  │ Dashboard :8501       │           │
@@ -38,132 +34,129 @@
 
 ---
 
-## 模块 1: Wazuh 日志采集链
+## 模块 1: auth.log 解析与检测引擎
 
-**文件**: 系统配置 `/var/ossec/etc/ossec.conf`（Agent）、Docker 容器内配置（Manager）
+**文件**: `MVP/client/log_parser.py` → `parse_line()` 函数
+**文件**: `MVP/client/detection_engine.py` → `DetectionEngine` 类
+**文件**: `MVP/client/detection_rules.yaml` → YAML 规则定义
+**入口**: `MVP/client/client_app.py` → 组装 `DetectionEngine` + `DuckDBQueryEngine`
 
-### 1.1 Agent 日志采集
+### 1.1 日志解析 (log_parser)
 
-Agent 通过 `logcollector` 进程采集以下日志源：
+`parse_line()` 采用两阶段解析：
 
-| 日志源 | ossec.conf 配置 | 说明 |
-|--------|----------------|------|
-| systemd journal | `<log_format>journald</log_format>` | 所有 systemd 服务的日志 |
-| auth.log | 通过 journald 间接采集 | SSH 登录、sudo、PAM 认证 |
-| syslog | 通过 journald 间接采集 | 系统通用日志 |
-| 命令输出 | `<log_format>command</log_format>` | df, netstat, last 等定时采集 |
-
-### 1.2 Agent → Manager 通信
-
+**Stage 1 — syslog 头部提取：**
 ```
-Agent (agentd) ──TCP:1514──> Manager (remoted) ──> analysisd ──> alerts.json
+正则: ^(\w{3}\s+\d+\s+\d+:\d+:\d+)\s+(\S+)\s+(\w+)(?:\[(\d+)\])?:\s+(.*)$
+提取: timestamp, hostname, process, pid, message
 ```
 
-- Agent 从 `/var/ossec/etc/client.keys` 读取认证密钥
-- 连接地址配置在 `<server><address>127.0.0.1</address></server>`
-- 使用 `127.0.0.1` 而非容器 IP（通过 Docker 端口映射 `1514:1514`）
+**Stage 2 — 进程特定消息解析：**
 
-### 1.3 Manager 告警生成
+| 进程 | 识别模式 | 提取字段 | log_type |
+|------|---------|---------|----------|
+| sshd | `Failed password for ... from ... port ...` | dst_user, src_ip, src_port | ssh_failed_password |
+| sshd | `Accepted password/publickey for ...` | dst_user, src_ip, src_port | ssh_accepted |
+| sshd | `Did not receive identification string from ...` | src_ip, src_port | ssh_scan |
+| sshd | `Connection closed by ... port ...` | src_ip, src_port, dst_user(可选) | ssh_connection_closed |
+| sshd | `Authentication failure` | — | ssh_auth_failure |
+| sshd | `Received disconnect from ... port ...` | src_ip, src_port | ssh_preauth_disconnect |
+| sudo | `authentication failure` | — | sudo_auth_failure |
+| sudo | `TTY=... USER=... COMMAND=...` | dst_user | sudo_success |
+| su | `FAILED SU` | — | su_failed |
+| su | `(to ...) ... on ...` | dst_user | su_success |
 
-`analysisd` 进程执行：
-1. **预解码** — 提取 timestamp, hostname, program_name
-2. **解码** — 根据日志类型选择对应 decoder（pam, sshd, sudo 等）
-3. **规则匹配** — 遍历 7067 条内置规则（`/var/ossec/ruleset/rules/`）
-4. **生成告警** — 匹配成功后写入 `alerts.json`（NDJSON）和 `alerts.log`
+未匹配的消息仍返回记录（`log_type = "ssh_other"` 等），保留 `src_ip=None`。
 
-### 1.4 告警文件路径
-
-由于 bind mount `./wazuh_logs:/var/ossec/logs`，Manager 写入的 `alerts.json` 直接出现在宿主机的 `wazuh_logs/alerts/alerts.json`。
-
-### 1.5 权限注意事项
-
-- Manager 容器内 `analysisd` 以 UID 999(wazuh) 运行
-- 写入宿主机的文件所有者为容器内的 UID 999（宿主机上可能显示为 `lxd` 或其他用户名）
-- 文件默认权限 `rw-rw----`（只有 owner 和 group 999 可读写）
-- 宿主机的 `admin` 用户（UID 1000）需要读取权限
-- **解决方案**: `chmod -R a+rX` + ACL `setfacl -d -m o::r`
-
----
-
-## 模块 2: Client — SignalWatcher（实时信号监控）
-
-**文件**: `MVP/client/signal_watcher.py` → `SignalWatcher` 类
-**入口**: `MVP/client/client_app.py` → 组装 `SignalWatcher` + `DuckDBQueryEngine`
-
-### 2.1 核心逻辑
+### 1.2 DetectionEngine 核心逻辑
 
 ```
-┌─────────────┐
-│ alerts.json │ (NDJSON, 持续追加)
-└──────┬──────┘
-       │ 每 2 秒轮询
+┌────────────────────┐
+│ /var/log/auth.log  │ (syslog, 持续追加)
+└──────┬─────────────┘
+       │ tail (每 2 秒轮询, byte offset)
        ▼
-┌──────────────────┐
-│ 检查文件大小     │ ← last_offset (byte 偏移)
-│ 读取新增字节     │
-│ 按 \n 分割       │
-│ JSON.parse 每行  │
-└──────┬───────────┘
+┌────────────────────┐
+│ log_parser         │ → parse_line() 逐行解析
+│ 结构化 dict        │    timestamp, process, src_ip, dst_user, log_type
+└──────┬─────────────┘
        │
        ▼
-┌──────────────────┐
-│ 去重检查         │ ← self.seen_ids (set)
-│ alert.id 新?     │
-└──────┬───────────┘
-       │ 新告警
-       ▼
-┌──────────────────┐
-│ _alert_to_signal │ → 构建微信号
-│ 提取:            │    signal_id, node_id,
-│   rule.id        │    rule_id, rule_level,
-│   rule.level     │    rule_desc, src_ip,
-│   rule.desc      │    event_time,
-│   agent.name     │    suggested_logs,
-│   agent.ip       │    raw_ref
-│   timestamp      │
-└──────┬───────────┘
+┌────────────────────┐
+│ DuckDB 内存表      │ → auth_events (INSERT)
+│ (列式存储)         │    自动清理 > 60 分钟的旧事件
+└──────┬─────────────┘
        │
        ▼
-┌──────────────────┐
-│ NATS publish     │ → soc.signals.{node_id}
-└──────────────────┘
+┌────────────────────┐
+│ YAML 规则 → SQL    │ → _build_rule_sql()
+│ threshold 查询     │    GROUP BY + HAVING COUNT >= threshold
+└──────┬─────────────┘
+       │ 触发
+       ▼
+┌────────────────────┐
+│ _build_signal()    │ → 构建微信号
+│ 提取:              │    signal_id, node_id, rule_id, severity,
+│   rule.id          │    category, src_ip, event_time,
+│   rule.name        │    suggested_logs, raw_ref, matched_count
+│   group_key        │
+└──────┬─────────────┘
+       │
+       ▼
+┌────────────────────┐
+│ NATS publish       │ → soc.signals.{node_id}
+│ + MonitorEmitter   │    + soc.monitor.events (signal.sent)
+└────────────────────┘
 ```
 
-### 2.2 关键设计决策
+### 1.3 YAML 规则定义
+
+**文件**: `MVP/client/detection_rules.yaml`
+
+| 规则ID | 类型 | group_by | threshold | 描述 |
+|--------|------|----------|-----------|------|
+| LOCAL_SSH_BRUTE_FORCE | brute_force | src_ip | 5次/5分钟 | SSH 暴力破解 |
+| LOCAL_SSH_SCAN | reconnaissance | src_ip | 3次/2分钟 | SSH 扫描 |
+| LOCAL_SUDO_FAILURES | privilege_escalation | dst_user | 3次/2分钟 | Sudo 认证失败 |
+| LOCAL_SU_FAILURES | privilege_escalation | dst_user | 3次/2分钟 | Su 认证失败 |
+| LOCAL_SSH_ACCEPTED | normal | — | 1次/1秒 | SSH 成功登录 |
+
+### 1.4 关键设计决策
 
 **为什么用 byte offset 而不是 tail -f？**
 - 跨平台兼容（不依赖 Linux 的 inotify）
 - 可精确追踪读取位置
 - 支持文件轮转后重新定位
 
-**为什么用 `alert.id` 去重？**
-- 每条 Wazuh 告警有唯一 ID（格式：`{timestamp}.{counter}`）
-- 即使文件被重新读取（如进程重启），已处理的告警不会被重复发送
+**为什么用 DuckDB 内存表而不是直接匹配？**
+- 支持 SQL threshold 查询（COUNT + GROUP BY + HAVING + 时间窗口）
+- YAML 规则可直接转换为 SQL，无需硬编码匹配逻辑
+- 自动清理旧事件（`EVENT_RETENTION_MINUTES`）
 
-**初始批次策略：**
-- 首次启动时扫描全部现有告警
-- 只发布最后 20 条（避免海量历史数据冲击服务端）
-- 全部告警 ID 加入 `seen_ids` 防止后续重复
+**src_ip 字段处理：**
+- `group_by: src_ip` 的规则 → src_ip = 实际攻击者 IP
+- `group_by: dst_user` 的规则 → src_ip = `"0.0.0.0"`（OpenSearch ip 类型兼容）
+- 无 group_by 的规则 → src_ip = `"0.0.0.0"`
 
-### 2.3 运行模式
+### 1.5 运行模式
 
-`SignalWatcher.run_forever()` 是一个无限循环的 asyncio 协程，与 `DuckDBQueryEngine.start_listening()` 并发运行在同一个事件循环中：
+`DetectionEngine.run_forever()` 是一个无限循环的 asyncio 协程，与 `DuckDBQueryEngine.start_listening()` 并发运行在同一个事件循环中：
 
 ```python
+engine_task = asyncio.create_task(engine.run_forever(), name="detection")
 sidecar_task = asyncio.create_task(sidecar.start_listening(), name="sidecar")
-watcher_task = asyncio.create_task(watcher.run_forever(), name="watcher")
-_, pending = await asyncio.wait([sidecar_task, watcher_task],
+_, pending = await asyncio.wait([engine_task, sidecar_task],
                                  return_when=asyncio.FIRST_COMPLETED)
 ```
 
 ---
 
-## 模块 3: Client — DuckDBQueryEngine（边缘按需查询）
+## 模块 2: Client — DuckDBQueryEngine（边缘按需查询）
 
 **文件**: `MVP/client/duckdb_sidecar.py` → `DuckDBQueryEngine` 类
 **入口**: `MVP/client/client_app.py` → 组装
 
-### 3.1 查询处理流程
+### 2.1 查询处理流程
 
 ```
 NATS soc.query.requests
@@ -171,53 +164,41 @@ NATS soc.query.requests
        ▼
 handle_query(msg)
        │
-       ├─ 解析 JSON → query_id, sql, source
+       ├─ 解析 JSON → query_id, source, filters
        │
-       ├─ 如果无 SQL 但有 filters → _build_sql(request)
-       │     └─ 从 filters 构造 DuckDB SQL:
-       │        SELECT * FROM read_json_auto('{path}')
+       ├─ auth_log 证据查询:
+       │     └─ 调用 DetectionEngine.query_events(filters)
+       │        从 auth_events 内存表中查询匹配事件
+       │        返回轻量级证据（不含原始 syslog 全文）
+       │
+       ├─ wazuh_alerts 查询 (兼容):
+       │     └─ _build_sql(request) → DuckDB read_json_auto()
        │        WHERE "rule"."id" = '{rule_id}' LIMIT {limit}
        │
-       ├─ DuckDB 执行 → rows
-       │
-       ├─ 构建轻量级证据 (不传全量日志!)
-       │     evidence_id, query_id, node_id,
-       │     raw_ref, lineage_id, hash,
-       │     timestamp, rule_id, agent_name, src_ip
+       ├─ MonitorEmitter 发布事件:
+       │     query.received → query.executed → result.sent
        │
        └─ NATS soc.query.results → 返回证据
 ```
 
-### 3.2 SQL 构建逻辑
+### 2.2 数据最小化原则
 
-`_build_sql()` 方法根据查询请求中的 `filters` 和 `source` 字段动态生成 SQL：
+证据中**不包含**完整的原始日志行（`raw_line`），只提取元数据（rule_id, timestamp, src_ip, dst_user, log_type）。原始日志通过 `raw_ref` 可追溯。
 
-```python
-sql = f"SELECT {fields_str} FROM read_json_auto('{data_path}')"
-if rule_id:
-    sql += f" WHERE \"rule\".\"id\" = '{rule_id}'"
-sql += f" LIMIT {limit}"
-```
+### 2.3 错误处理
 
-### 3.3 数据最小化原则
-
-证据中**不包含** `full_log` 原始字段，只提取元数据（rule_id, timestamp, agent_name, src_ip）。原始日志通过 `raw_ref` 和 `lineage_id` 可追溯。
-
-### 3.4 错误处理
-
-- 文件竞态（Wazuh 写入与 DuckDB 读取冲突）自动重试最多 2 次
 - `safe_ack()` 带重试限制的 ACK — 超限自动丢弃防死信阻塞
 - `subscribe_safe()` 自动处理 Stream 创建 + Consumer 残留清理
 
 ---
 
-## 模块 4: Server — SignalListener + ResultListener
+## 模块 3: Server — SignalListener + ResultListener
 
 **文件**: `MVP/server/signal_listener.py` → `SignalListener` 类
 **文件**: `MVP/server/query_result_listener.py` → `QueryResultListener` 类
 **入口**: `MVP/server/server_app.py` → 组装
 
-### 4.1 SignalListener
+### 3.1 SignalListener
 
 ```
 NATS soc.signals.* (通配符订阅)
@@ -230,13 +211,13 @@ handle_signal(msg)
        ├─ 构建查询请求:
        │     query_id = f"qry-{uuid}"
        │     source = suggested_logs[0]
-       │     filters = {"rule.id": signal.rule_id}
+       │     filters = {"src_ip": signal.src_ip} 或 {"rule.id": signal.rule_id}
        │     limit = 20
        ├─ NATS soc.query.requests → 下发到边缘
-       └─ msg.ack() (手动确认)
+       └─ msg.ack()
 ```
 
-### 4.2 QueryResultListener
+### 3.2 QueryResultListener
 
 ```
 NATS soc.query.results
@@ -245,11 +226,11 @@ NATS soc.query.results
 handle_result(msg)
        │
        ├─ 解析结果 → query_id, evidence_count, execution_time_ms, evidence
-       ├─ 持久化到本地 outputs/nats_{timestamp}/evidence.json
+       ├─ 持久化到本地 outputs/{timestamp}/evidence.json
        └─ msg.ack()
 ```
 
-### 4.3 并发模型
+### 3.3 并发模型
 
 ```python
 # 3 个独立线程（阻塞服务）
@@ -263,17 +244,13 @@ result_task = asyncio.create_task(result_listener.listen_forever())
 await asyncio.wait([signal_task, result_task], return_when=FIRST_COMPLETED)
 ```
 
-- Query Gateway、Dashboard、Monitor Dashboard 各自在独立线程中运行
-- 两个 Listener 是独立的 asyncio Task，共享同一个事件循环
-- Monitor Dashboard（:8502）通过 NATS Core Pub/Sub 订阅 `soc.monitor.events` 实时展示全链路事件
-
 ---
 
-## 模块 5: Server — Query Gateway (REST API)
+## 模块 4: Server — Query Gateway (REST API)
 
 **文件**: `MVP/server/query_gateway.py`
 
-### 5.1 端点定义
+### 4.1 端点定义
 
 | 方法 | 路径 | 功能 |
 |------|------|------|
@@ -282,7 +259,7 @@ await asyncio.wait([signal_task, result_task], return_when=FIRST_COMPLETED)
 | GET | `/metadata` | 查看元数据注册表 |
 | POST | `/query` | **主查询接口**（见下方） |
 
-### 5.2 POST /query 处理流水线
+### 4.2 POST /query 处理流水线
 
 ```
 QueryRequest (Pydantic 模型校验)
@@ -313,7 +290,7 @@ standardize_evidence(rows)
 QueryResponse → 返回客户端
 ```
 
-### 5.3 Pydantic 模型
+### 4.3 Pydantic 模型
 
 ```python
 class QueryRequest(BaseModel):
@@ -352,11 +329,11 @@ class QueryResponse(BaseModel):
 
 ---
 
-## 模块 6: Agent Team（多 Agent LLM 研判）
+## 模块 5: Agent Team（多 Agent LLM 研判）
 
 **文件**: `MVP/server/agent_team.py`
 
-### 6.1 三 Agent 架构
+### 5.1 三 Agent 架构
 
 ```
 证据列表 (list[dict])
@@ -386,7 +363,7 @@ class QueryResponse(BaseModel):
                      返回: AnalysisDraft
 ```
 
-### 6.2 LLM 调用细节
+### 5.2 LLM 调用细节
 
 ```python
 def _call_llm(system_prompt: str, user_message: str) -> Optional[dict]:
@@ -397,7 +374,7 @@ def _call_llm(system_prompt: str, user_message: str) -> Optional[dict]:
         system=system_prompt,
         messages=[{"role": "user", "content": user_message}],
     )
-    # 从响应中提取文本 (兼容 TextBlock 和 ThinkingBlock)
+    # 兼容 TextBlock 和 ThinkingBlock
     text = ""
     for block in response.content:
         if hasattr(block, "text"):
@@ -410,7 +387,7 @@ def _call_llm(system_prompt: str, user_message: str) -> Optional[dict]:
 
 **代理处理** — 代码中临时清除 `ALL_PROXY/HTTP_PROXY/HTTPS_PROXY` 环境变量，因为 SOCKS 代理会导致 httpx 崩溃。
 
-### 6.3 Agent Team 协调器
+### 5.3 Agent Team 协调器
 
 ```python
 class AgentTeamCoordinator:
@@ -425,11 +402,11 @@ class AgentTeamCoordinator:
 
 ---
 
-## 模块 7: Data Readiness Checker（数据质量门控）
+## 模块 6: Data Readiness Checker（数据质量门控）
 
 **文件**: `MVP/server/readiness.py` → `DataReadinessChecker`
 
-### 7.1 评分算法
+### 6.1 评分算法
 
 ```
 初始分: 100
@@ -457,7 +434,7 @@ check_uniqueness():
 score = max(score, 0)
 ```
 
-### 7.2 操作权限门控
+### 6.2 操作权限门控
 
 | 评分 | 等级 | 允许 | 阻止 |
 |------|------|------|------|
@@ -468,11 +445,11 @@ score = max(score, 0)
 
 ---
 
-## 模块 8: Verifier Agent（复核校验）
+## 模块 7: Verifier Agent（复核校验）
 
 **文件**: `MVP/server/verifier.py` → `VerifierAgent`
 
-### 8.1 5 层校验链
+### 7.1 5 层校验链
 
 ```
 verify_evidence_ref(agent_result, evidence)
@@ -501,39 +478,56 @@ verify_conclusion(conclusion, evidence_count, readiness_score)
   → readiness < 60 但高置信度 → 失败
 ```
 
-### 8.2 绝对化表述黑名单
+### 7.2 绝对化表述黑名单
 
 ```
 "完全控制", "已被攻陷", "数据泄露", "rootkit", "APT攻击",
 "供应链攻击", "国家级攻击者", "已成功入侵", "完全沦陷", "内部威胁确认"
 ```
 
-这些词语在没有足够证据支撑时不应出现在 AI 生成的结论中。
-
 ---
 
-## 模块 9: OCSF Mapper（标准化映射）
+## 模块 8: OCSF Mapper（标准化映射）
 
 **文件**: `MVP/common/ocsf_mapper.py`
 
-### 9.1 核心映射函数
+### 8.1 核心映射函数
+
+**map_wazuh_to_ocsf()** — Wazuh 告警 → OCSF（兼容旧模式）：
 
 ```python
 def map_wazuh_to_ocsf(evidence_item: dict) -> dict:
     return {
-        "timestamp":  evidence_item.get("timestamp"),
-        "severity":   evidence_item.get("level"),        # Wazuh level → OCSF severity
-        "rule_id":    evidence_item.get("rule_id"),
-        "description":evidence_item.get("description"),
-        "src_ip":     evidence_item.get("agent_ip"),     # Wazuh agent_ip → OCSF src_ip
-        "hostname":   evidence_item.get("agent_name"),   # Wazuh agent_name → OCSF hostname
-        "evidence_id":evidence_item.get("evidence_id"),
-        "source":     "wazuh-alerts",
-        "raw_log":    evidence_item.get("full_log"),
+        "timestamp":   evidence_item.get("timestamp"),
+        "severity":    evidence_item.get("level"),
+        "rule_id":     evidence_item.get("rule_id"),
+        "description": evidence_item.get("description"),
+        "src_ip":      evidence_item.get("agent_ip"),
+        "hostname":    evidence_item.get("agent_name"),
+        "evidence_id": evidence_item.get("evidence_id"),
+        "source":      "wazuh-alerts",
+        "raw_log":     evidence_item.get("full_log"),
     }
 ```
 
-### 9.2 辅助函数
+**map_authlog_to_ocsf()** — auth.log 事件 → OCSF：
+
+```python
+def map_authlog_to_ocsf(evidence_item: dict) -> dict:
+    return {
+        "timestamp":   evidence_item.get("timestamp"),
+        "severity":    evidence_item.get("severity"),
+        "rule_id":     evidence_item.get("rule_id"),
+        "description": evidence_item.get("description"),
+        "src_ip":      evidence_item.get("src_ip"),
+        "hostname":    evidence_item.get("hostname"),
+        "evidence_id": evidence_item.get("evidence_id"),
+        "source":      "auth_log",
+        "raw_log":     evidence_item.get("log_type"),
+    }
+```
+
+### 8.2 辅助函数
 
 - `extract_severity(evidence)` — 兼容多种 severity 字段名（severity/level/priority），返回 int
 - `extract_src_ip(evidence)` — 兼容 src_ip/agent_ip/data.srcip
@@ -541,12 +535,12 @@ def map_wazuh_to_ocsf(evidence_item: dict) -> dict:
 
 ---
 
-## 模块 10: Dashboard（可视化面板）
+## 模块 9: Dashboard（可视化面板）
 
 **文件**: `MVP/server/dashboard.py` (研判面板, Streamlit :8501)
 **文件**: `MVP/server/monitor_dashboard.py` (实时监控面板, Streamlit :8502)
 
-### 10.1 页面结构
+### 9.1 研判面板 (:8501) 页面结构
 
 ```python
 st.set_page_config(layout="wide")   # 宽屏布局
@@ -564,7 +558,7 @@ st.container(border=True)            # 卡片 4: 复核结果
 st.container(border=True)            # 卡片 5: 完整研判报告
 ```
 
-### 10.2 数据读取
+### 9.2 数据读取
 
 每个卡片从 `outputs/{timestamp}/` 目录读取对应的 JSON 文件：
 - `readiness.json` → 卡片 1
@@ -573,7 +567,7 @@ st.container(border=True)            # 卡片 5: 完整研判报告
 - `verifier_result.json` → 卡片 4
 - `report.md` → 卡片 5（Markdown 渲染）
 
-### 10.3 Monitor Dashboard（实时监控面板）
+### 9.3 Monitor Dashboard（实时监控面板 :8502）
 
 **文件**: `MVP/server/monitor_dashboard.py`
 
@@ -601,22 +595,22 @@ st.container(border=True)            # 卡片 5: 完整研判报告
 
 ---
 
-## 模块 11: Monitor Emitter（监控事件发射器）
+## 模块 10: Monitor Emitter（监控事件发射器）
 
 **文件**: `MVP/common/monitor_events.py` → `MonitorEmitter` 类
 
-### 11.1 设计原则
+### 10.1 设计原则
 
 所有 Client/Server 组件通过 `MonitorEmitter` 发布轻量级结构化事件到 NATS 核心 Pub/Sub（非 JetStream），供 Monitor Dashboard 消费：
 - **best-effort** — 发布失败不影响主流程
 - **即发即弃** — 无需 ACK，无需持久化
 - **轻量级** — 每个事件仅包含关键元数据
 
-### 11.2 8 种事件类型
+### 10.2 8 种事件类型
 
 | 事件类型 | 来源 | 发射组件 |
 |---------|------|---------|
-| `signal.sent` | Client | SignalWatcher |
+| `signal.sent` | Client | DetectionEngine |
 | `signal.received` | Server | SignalListener |
 | `query.sent` | Server | SignalListener |
 | `query.received` | Client | DuckDBQueryEngine |
@@ -625,19 +619,19 @@ st.container(border=True)            # 卡片 5: 完整研判报告
 | `result.received` | Server | QueryResultListener |
 | `evidence.saved` | Server | QueryResultListener |
 
-### 11.3 事件结构
+### 10.3 事件结构
 
 ```json
 {
   "event_id": "evt-a1b2c3d4",
   "event_type": "signal.sent",
   "source": "client",
-  "component": "SignalWatcher",
+  "component": "DetectionEngine",
   "node_id": "node-web-01",
   "timestamp": "20:43:47",
   "payload": {
     "signal_id": "sig-bbbe6f60",
-    "rule_id": "5503",
+    "rule_id": "LOCAL_SSH_BRUTE_FORCE",
     "rule_level": 5,
     "node_id": "node-web-01"
   }
@@ -646,11 +640,11 @@ st.container(border=True)            # 卡片 5: 完整研判报告
 
 ---
 
-## 模块 12: NATS 共享工具
+## 模块 11: NATS 共享工具
 
 **文件**: `MVP/common/nats_utils.py`
 
-### 12.1 提供的工具函数
+### 11.1 提供的工具函数
 
 | 函数 | 职责 |
 |------|------|
@@ -659,16 +653,12 @@ st.container(border=True)            # 卡片 5: 完整研判报告
 | `subscribe_safe(js, subject, durable)` | 安全订阅（自动处理 Stream 不存在、Consumer 残留） |
 | `safe_ack(msg, on_success)` | 带重试限制的 ACK 处理（超限自动丢弃防死信） |
 
-### 12.2 Stream 默认配置
+### 11.2 Stream 默认配置
 
 ```python
 STREAM_CONFIG = {
-    "max_age":  24 * 3600,          # 24 小时后自动过期
-    "max_bytes": 500 * 1024 * 1024, # 单 Stream 最多 500 MB
+    "max_age":   24 * 3600,          # 24 小时后自动过期
+    "max_bytes": 500 * 1024 * 1024,  # 单 Stream 最多 500 MB
 }
-MAX_DELIVERY_ATTEMPTS = 3           # 每条消息最大重试次数
+MAX_DELIVERY_ATTEMPTS = 3            # 每条消息最大重试次数
 ```
-
-### 12.3 Docker 文件竞态处理
-
-`DuckDBQueryEngine.execute_query()` 遇到 "Malformed JSON" 或 "unexpected end of data" 错误时自动重试（最多 2 次），处理 Wazuh Manager 写入与 DuckDB 读取的竞态条件。

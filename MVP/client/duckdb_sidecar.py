@@ -38,8 +38,9 @@ class DuckDBQueryEngine:
     边缘侧 DuckDB 查询引擎
     """
 
-    def __init__(self, node_id: str = DEFAULT_NODE_ID):
+    def __init__(self, node_id: str = DEFAULT_NODE_ID, detection_engine=None):
         self.node_id = node_id
+        self.detection_engine = detection_engine  # optional DetectionEngine for auth_log queries
         self.con: Optional[duckdb.DuckDBPyConnection] = None
         self.nc: Optional[nats.NATS] = None
         self.js: Optional[nats.JetStreamContext] = None
@@ -125,11 +126,9 @@ class DuckDBQueryEngine:
         evidence_list = []
 
         for row in rows:
-            # 计算哈希用于溯源
             raw_str = "|".join([str(f) for f in row])
             row_hash = hashlib.sha256(raw_str.encode()).hexdigest()[:16]
 
-            # 提取关键字段
             timestamp_field = row[0].isoformat() if hasattr(row[0], 'isoformat') else str(row[0])
 
             evidence = {
@@ -140,7 +139,6 @@ class DuckDBQueryEngine:
                 "lineage_id": f"{query_id}:{row_hash}",
                 "hash": row_hash,
                 "timestamp": timestamp_field,
-                # 关键字段（不全量）
                 "rule_id": row[1].get("id") if len(row) > 1 and isinstance(row[1], dict) else str(row[1]),
                 "agent_name": row[2].get("name") if len(row) > 2 and isinstance(row[2], dict) else str(row[2]),
                 "src_ip": row[2].get("ip") if len(row) > 2 and isinstance(row[2], dict) else "",
@@ -148,6 +146,37 @@ class DuckDBQueryEngine:
             }
             evidence_list.append(evidence)
 
+        return evidence_list
+
+    def _build_evidence_from_auth_events(
+        self, events: list[dict], query_id: str
+    ) -> list[dict]:
+        """Build evidence dicts from DetectionEngine-parsed auth events."""
+        evidence_list = []
+        for ev in events:
+            raw_str = json.dumps(ev, sort_keys=True, default=str)
+            row_hash = hashlib.sha256(raw_str.encode()).hexdigest()[:16]
+            src_ip = ev.get("src_ip") or ""
+            ts = ev.get("timestamp") or ""
+            evidence_list.append({
+                "evidence_id": f"ev-{uuid.uuid4().hex[:8]}",
+                "query_id": query_id,
+                "node_id": self.node_id,
+                "source": "auth_log",
+                "raw_ref": f"{self.node_id}/auth_log#{src_ip}#{ts}",
+                "lineage_id": f"{query_id}:{row_hash}",
+                "hash": row_hash,
+                "timestamp": ts,
+                "hostname": ev.get("hostname", ""),
+                "process": ev.get("process", ""),
+                "pid": ev.get("pid"),
+                "src_ip": src_ip,
+                "src_port": ev.get("src_port"),
+                "dst_user": ev.get("dst_user"),
+                "log_type": ev.get("log_type", ""),
+                "message": ev.get("message", ""),
+                "raw_line": ev.get("raw_line", ""),
+            })
         return evidence_list
 
     async def handle_query_request(self, msg):
@@ -159,15 +188,55 @@ class DuckDBQueryEngine:
 
         async def _process():
             nonlocal request
+            import time as _time
             request = json.loads(msg.data.decode())
             query_id = request.get("query_id", "unknown")
             sql = request.get("sql", "")
             source = request.get("source", "wazuh-alerts")
 
-            print(f"📩 [DuckDBSidecar:{self.node_id}] 收到查询: {query_id}")
+            print(f"📩 [DuckDBSidecar:{self.node_id}] 收到查询: {query_id} (source={source})")
             if self.monitor:
                 await self.monitor.query_received(query_id=query_id, node_id=self.node_id)
 
+            # ---- auth_log source: delegate to DetectionEngine ----
+            if source == "auth_log":
+                if self.detection_engine is None:
+                    print(f"⚠️ [DuckDBSidecar] DetectionEngine not available for auth_log query")
+                    return
+                start = _time.time()
+                events = self.detection_engine.query_events(
+                    filters=request.get("filters", {}),
+                    limit=request.get("limit", 20),
+                )
+                elapsed = round((_time.time() - start) * 1000, 2)
+                evidence = self._build_evidence_from_auth_events(events, query_id)
+
+                if self.monitor:
+                    await self.monitor.query_executed(
+                        query_id=query_id, duration_ms=elapsed,
+                        evidence_count=len(evidence))
+
+                result_msg = {
+                    "query_id": query_id,
+                    "node_id": self.node_id,
+                    "source": source,
+                    "evidence_count": len(evidence),
+                    "execution_time_ms": elapsed,
+                    "evidence": evidence,
+                }
+
+                await self.js.publish(
+                    NATS_QUERY_RESULTS,
+                    json.dumps(result_msg, default=str).encode(),
+                )
+                print(f"📤 [DuckDBSidecar:{self.node_id}] auth_log: {len(evidence)} 条证据 ({elapsed}ms)")
+                if self.monitor:
+                    await self.monitor.result_sent(
+                        query_id=query_id, node_id=self.node_id,
+                        evidence_count=len(evidence), duration_ms=elapsed)
+                return
+
+            # ---- wazuh-alerts / other sources: SQL execution ----
             if not sql or not sql.strip():
                 if "filters" in request:
                     sql = self._build_sql(request)
@@ -197,7 +266,7 @@ class DuckDBQueryEngine:
 
             await self.js.publish(
                 NATS_QUERY_RESULTS,
-                json.dumps(result_msg).encode(),
+                json.dumps(result_msg, default=str).encode(),
             )
 
             print(f"📤 [DuckDBSidecar:{self.node_id}] 返回 {len(evidence)} 条证据 ({elapsed}ms)")

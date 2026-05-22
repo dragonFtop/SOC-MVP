@@ -118,9 +118,13 @@ async def safe_ack(msg, on_success=None) -> bool:
             await on_success()
         await msg.ack()
         return True
-    except Exception:
+    except Exception as e:
+        import traceback
+        print(f"   ⚠️ [safe_ack] 处理失败 (attempt {attempts}/{MAX_DELIVERY_ATTEMPTS}): {e}")
+        traceback.print_exc()
         if attempts >= MAX_DELIVERY_ATTEMPTS:
             await msg.ack()
+            print(f"   ⚠️ [safe_ack] 已达最大重试次数，消息已丢弃")
             return True
         else:
             await msg.nak()

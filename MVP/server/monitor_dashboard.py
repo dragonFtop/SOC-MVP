@@ -184,7 +184,7 @@ def _render_panel(etype: str, events_subset: list[dict]):
         recent = events_subset[-10:]
         rows = [_format_event(e) for e in reversed(recent)]
         try:
-            st.dataframe(rows, height=180, use_container_width=True)
+            st.dataframe(rows, height=180, width='stretch')
         except Exception as e:
             st.warning(f"渲染失败: {e}")
 
@@ -204,7 +204,7 @@ def _render_event_log(all_events: list[dict]):
                 "数据": json.dumps(e.get("payload", {}), ensure_ascii=False)[:80],
             })
         try:
-            st.dataframe(rows, height=250, use_container_width=True)
+            st.dataframe(rows, height=250, width='stretch')
         except Exception as e:
             st.warning(f"日志渲染失败: {e}")
 
@@ -255,7 +255,7 @@ def main():
     c1, c2, c3 = st.columns([2, 2, 1])
     c1.markdown(f"**{icon} NATS: {label}**")
     c2.markdown(f"事件总计 **{total_client + total_server}** — Client **{total_client}** | Server **{total_server}**")
-    if c3.button("🔧 自检", use_container_width=True, help="发送测试事件验证管道"):
+    if c3.button("🔧 自检", width='stretch', help="发送测试事件验证管道"):
         collector.publish_test()
         st.success("测试事件已发送，2秒后刷新面板")
 

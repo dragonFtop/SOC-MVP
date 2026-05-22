@@ -1,12 +1,12 @@
 from opensearchpy import OpenSearch, helpers
 import json
 import os
-from config import OPENSEARCH_HOST, OPENSEARCH_PORT, OPENSEARCH_USER, OPENSEARCH_PASS, OUTPUTS_DIR
+from config import OPENSEARCH_HOST, OPENSEARCH_PORT, OPENSEARCH_USER, OPENSEARCH_PASS, OUTPUTS_DIR, ROOT_DIR
 
 
 class OpenSearchClient:
     """OpenSearch 客户端封装"""
-    
+
     def __init__(self, host=None, port=None):
         self.host = host or OPENSEARCH_HOST
         self.port = port or OPENSEARCH_PORT
@@ -16,9 +16,29 @@ class OpenSearchClient:
             use_ssl=False,
             verify_certs=False
         )
-    
+
+    def ensure_index(self, index_name: str, mapping_path: str = None):
+        """确保索引存在并应用 mapping，不存在则创建。仅 soc-evidence 使用显式映射。"""
+        if self.client.indices.exists(index=index_name):
+            return
+        if index_name != "soc-evidence":
+            self.client.indices.create(index=index_name)
+            print(f"✅ [OpenSearch] 索引 {index_name} 已创建（动态映射）")
+            return
+        if mapping_path is None:
+            mapping_path = os.path.join(ROOT_DIR, "mapping.json")
+        if not os.path.exists(mapping_path):
+            print(f"⚠️ [OpenSearch] mapping 文件不存在: {mapping_path}，使用动态映射")
+            self.client.indices.create(index=index_name)
+            return
+        with open(mapping_path, "r", encoding="utf-8") as f:
+            mapping_body = json.load(f)
+        self.client.indices.create(index=index_name, body=mapping_body)
+        print(f"✅ [OpenSearch] 索引 {index_name} 已创建（应用 mapping.json）")
+
     def index(self, index_name: str, document: dict, doc_id: str = None):
         """索引单条文档"""
+        self.ensure_index(index_name)
         try:
             response = self.client.index(
                 index=index_name,
@@ -29,9 +49,12 @@ class OpenSearchClient:
         except Exception as e:
             print(f"⚠️ [OpenSearch] 索引失败: {e}")
             return None
-    
+
     def bulk_index(self, index_name: str, documents: list):
         """批量索引文档"""
+        if not documents:
+            return 0
+        self.ensure_index(index_name)
         actions = [
             {
                 "_index": index_name,
@@ -40,8 +63,13 @@ class OpenSearchClient:
             for doc in documents
         ]
         try:
-            success, failed = helpers.bulk(self.client, actions, raise_on_error=False)
-            print(f"✅ [OpenSearch] 批量索引: {success} 成功, {failed} 失败")
+            success, errors = helpers.bulk(self.client, actions, raise_on_error=False)
+            if errors:
+                print(f"⚠️ [OpenSearch] 批量索引: {success} 成功, {len(errors)} 失败")
+                for err in errors[:3]:  # 只打印前 3 条错误详情
+                    print(f"  错误详情: {err}")
+            else:
+                print(f"✅ [OpenSearch] 批量索引: {success} 成功, 0 失败")
             return success
         except Exception as e:
             print(f"⚠️ [OpenSearch] 批量索引失败: {e}")

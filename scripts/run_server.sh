@@ -18,7 +18,7 @@ echo ""
 start_infra() {
     echo "🐳 检查 Docker 基础设施..."
 
-    INFRA_CONTAINERS=("opensearch" "nats" "wazuh-manager")
+    INFRA_CONTAINERS=("opensearch" "nats")
     ALL_RUNNING=true
 
     for c in "${INFRA_CONTAINERS[@]}"; do
@@ -33,7 +33,7 @@ start_infra() {
     if [ "$ALL_RUNNING" = false ]; then
         echo ""
         echo "📦 启动基础设施 (Docker Compose)..."
-        docker compose up -d opensearch dashboards wazuh-manager logstash nats
+        docker compose up -d opensearch nats
         echo ""
         echo "⏳ 等待基础设施就绪 (15秒)..."
         sleep 15
@@ -52,14 +52,6 @@ start_infra() {
 }
 
 start_infra
-
-# ---- 1.5. 修复 wazuh_logs 权限 (容器写文件后宿主机需可读) ----
-echo ""
-echo "🔧 修复 wazuh_logs 文件权限..."
-sudo chmod -R a+rX "$SCRIPT_DIR/../wazuh_logs/" 2>/dev/null || true
-sudo chmod g+s "$SCRIPT_DIR/../wazuh_logs/alerts/" 2>/dev/null || true
-sudo setfacl -d -m o::r "$SCRIPT_DIR/../wazuh_logs/alerts/" 2>/dev/null || true
-echo "   ✅ 权限已修复"
 
 # ---- 2. 启动服务端 Python 应用 ----
 echo "🖥️ 启动服务端核心组件..."

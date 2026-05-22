@@ -1,6 +1,6 @@
 #!/bin/bash
 # AI-SOC Client 启动脚本
-# 启动边缘侧数据采集和查询引擎
+# 启动边缘侧本地检测引擎和查询引擎
 # 用法: bash scripts/run_client.sh
 
 set -e
@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR/.."
 
 echo "================================================"
-echo "  AI-SOC Client - 边缘侧安全数据采集"
+echo "  AI-SOC Client - 边缘侧本地安全检测"
 echo "  启动时间: $(date '+%Y-%m-%d %H:%M:%S')"
 echo "================================================"
 echo ""
@@ -33,22 +33,24 @@ check_nats
 # ---- 2. 检查数据源 ----
 check_data() {
     echo "📂 检查数据源..."
-    ALERTS_FILE="wazuh_logs/alerts/alerts.json"
-    if [ -f "$ALERTS_FILE" ]; then
-        if [ -r "$ALERTS_FILE" ]; then
-            echo "   ✅ Wazuh 告警数据存在且可读"
+    AUTH_LOG="/var/log/auth.log"
+    if [ -f "$AUTH_LOG" ]; then
+        if [ -r "$AUTH_LOG" ]; then
+            echo "   ✅ auth.log 存在且可读"
+            echo "   最近条目:"
+            tail -3 "$AUTH_LOG" 2>/dev/null | sed 's/^/     /' || true
         else
-            echo "   ⚠️ 告警数据无读取权限，尝试修复..."
-            sudo chmod o+r "$ALERTS_FILE" 2>/dev/null || true
-            if [ -r "$ALERTS_FILE" ]; then
+            echo "   ⚠️ auth.log 无读取权限，尝试修复..."
+            sudo chmod o+r "$AUTH_LOG" 2>/dev/null || true
+            if [ -r "$AUTH_LOG" ]; then
                 echo "   ✅ 权限已修复"
             else
-                echo "   ❌ 权限修复失败，请手动执行: sudo chmod o+r $SCRIPT_DIR/../wazuh_logs/alerts/"
+                echo "   ❌ 权限修复失败，请手动执行: sudo chmod o+r $AUTH_LOG"
             fi
         fi
     else
-        echo "   ⚠️ Wazuh 告警数据不存在: $ALERTS_FILE"
-        echo "   -> 信号生成可能失败"
+        echo "   ⚠️ auth.log 不存在: $AUTH_LOG"
+        echo "   -> 检测引擎将等待文件出现"
     fi
     echo ""
 }
@@ -59,8 +61,8 @@ check_data
 echo "🖥️ 启动边缘侧核心组件..."
 echo ""
 echo "即将启动:"
-echo "  - DuckDB Sidecar       -> 监听 soc.query.requests"
-echo "  - Signal Generator     -> 发布信号到 NATS"
+echo "  - Detection Engine      -> 监控 $AUTH_LOG (YAML rules)"
+echo "  - DuckDB Sidecar        -> 监听 soc.query.requests"
 echo ""
 echo "服务端应在另一个终端窗口中运行 (bash scripts/run_server.sh)"
 echo "================================================"

@@ -54,14 +54,33 @@ class QueryResultListener:
                                                    node_id=result.get("node_id"),
                                                    evidence_count=result.get("evidence_count", 0))
 
+            # OCSF 标准化映射
+            from common.ocsf_mapper import map_authlog_to_ocsf
+            source = result.get("source", "")
+            evidence_list = result.get("evidence", [])
+            if source == "auth_log":
+                evidence_list = [map_authlog_to_ocsf(ev) for ev in evidence_list]
+
             # 持久化证据到本地 outputs 目录
             timestamp = time.strftime("%Y%m%d_%H%M%S")
             output_dir = os.path.join(OUTPUTS_DIR, f"nats_{timestamp}")
             os.makedirs(output_dir, exist_ok=True)
             evidence_path = os.path.join(output_dir, "evidence.json")
             with open(evidence_path, "w", encoding="utf-8") as f:
-                json.dump(result.get("evidence", []), f, indent=2, ensure_ascii=False)
+                json.dump(evidence_list, f, indent=2, ensure_ascii=False)
             print(f"[ResultListener] 证据已保存: {evidence_path}")
+
+            # 持久化到 OpenSearch (best-effort)
+            if evidence_list:
+                try:
+                    from .opensearch_loader import OpenSearchClient
+                    os_client = OpenSearchClient()
+                    for doc in evidence_list:
+                        os_client.index("soc-evidence", doc)
+                    print(f"[ResultListener] {len(evidence_list)} 条证据已索引入 OpenSearch")
+                except Exception as e:
+                    print(f"[ResultListener] OpenSearch 索引失败 (best-effort): {e}")
+
             if self.monitor:
                 await self.monitor.evidence_saved(query_id=result.get("query_id"),
                                                   evidence_count=result.get("evidence_count", 0),

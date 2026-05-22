@@ -22,7 +22,7 @@ class MonitorEmitter:
     def __init__(self, nc, component: str, node_id: str = ""):
         self.nc = nc
         self.component = component
-        self.source = "client" if component in ("SignalWatcher", "DuckDBSidecar") else "server"
+        self.source = "client" if component in ("SignalWatcher", "DuckDBSidecar", "DetectionEngine") else "server"
         self.node_id = node_id
 
     # ── 8 种事件类型 ──────────────────────────────────────────

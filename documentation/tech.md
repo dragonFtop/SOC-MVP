@@ -6,7 +6,7 @@
 
 - 边缘节点**不**上传全量日志到中心，只发送轻量级"微信号"（signal_id, node_id, rule_id, src_ip, event_time, suggested_logs）
 - 中心根据信令中的 `suggested_logs` 字段，构建 DuckDB 查询计划，下发到边缘 Sidecar
-- 边缘 Sidecar 在本地执行查询，只返回**关键证据字段**（不全量上传原始日志）
+- 边缘 Sidecar 在本地查询 DetectionEngine 预解析事件，只返回**关键证据字段**（不全量上传原始日志）
 - 中心将证据 OCSF 标准化后，进行质量门控 → AI 研判 → 复核校验 → 输出报告
 
 这避免了传统 SIEM 架构中全量日志上传的带宽和存储开销。
@@ -26,14 +26,14 @@
 
 在本项目中的角色：Client ↔ Server 之间**所有**消息通信的唯一通道。选择 NATS 而非 RabbitMQ/Kafka 的原因：极简部署（单个二进制）、低延迟、原生 JetStream 持久化。
 
-**本项目定义的 4 个 Stream/Subject：**
+**本项目定义的 4 个 Subject：**
 
 | Subject | 方向 | 内容 |
 |---------|------|------|
-| `soc.signals.{node_id}` | Client → Server | 微信号 |
-| `soc.query.requests` | Server → Client | DuckDB 查询请求 |
-| `soc.query.results` | Client → Server | 查询结果（轻量级证据） |
-| `soc.monitor.events` | All → Monitor | 全链路监控事件（核心Pub/Sub） |
+| `soc.signals.{node_id}` | Client → Server | 微信号 (JetStream) |
+| `soc.query.requests` | Server → Client | DuckDB 查询请求 (JetStream) |
+| `soc.query.results` | Client → Server | 查询结果 / 轻量级证据 (JetStream) |
+| `soc.monitor.events` | All → Monitor | 全链路监控事件 (Core Pub/Sub) |
 
 ### FastAPI + Uvicorn
 
@@ -56,7 +56,22 @@ Query Gateway 是一个 REST API 服务，提供 4 个端点：`GET /`, `GET /he
 
 ---
 
-## 2. 边缘查询引擎
+## 2. 边缘检测与查询引擎
+
+### DetectionEngine + log_parser
+
+| 属性 | 说明 |
+|------|------|
+| **文件** | `MVP/client/detection_engine.py`, `MVP/client/log_parser.py` |
+| **规则** | `MVP/client/detection_rules.yaml` |
+| **数据源** | `/var/log/auth.log` (syslog) |
+| **轮询间隔** | 2 秒 (byte offset 增量读取) |
+
+核心能力：
+- **两阶段解析** — syslog 头部提取 + 进程特定消息解析（sshd/sudo/su）
+- **DuckDB 内存表** — 解析后事件写入 `auth_events` 表，自动清理 > 60 分钟旧数据
+- **YAML → SQL** — 检测规则自动转换为 DuckDB SQL threshold 查询
+- **5 条内置规则** — SSH 暴力破解、SSH 扫描、Sudo 失败、Su 失败、SSH 成功登录
 
 ### DuckDB
 
@@ -67,63 +82,19 @@ Query Gateway 是一个 REST API 服务，提供 4 个端点：`GET /`, `GET /he
 | **运行位置** | Client 端（边缘侧） |
 
 关键能力：
-- **`read_json_auto()`** — 直接查询 NDJSON 文件，自动推断 schema，无需预先定义表结构
+- **`read_json_auto()`** — 直接查询 NDJSON 文件，自动推断 schema（兼容旧 Wazuh 模式）
+- **内存表查询** — DetectionEngine 的 auth_events 表支持 SQL threshold 检测
 - **零配置** — 进程内引擎，`duckdb.connect()` 即可使用，不需要独立服务
 - **列式存储** — 查询性能远高于 SQLite（面向 OLAP 分析场景）
-- **支持格式** — JSON, CSV, Parquet, 甚至直接读 S3
 
 在项目中的使用场景：
-- `local_gateway.py` — 封装 DuckDB 查询，从 `alerts.json` 按 rule_id 筛选
-- `duckdb_sidecar.py` — 在 Client 端作为查询执行引擎
-- `query_gateway.py` — 在 Server 端执行本地查询（开发/单机模式）
+- `detection_engine.py` — DetectionEngine 内存表 + SQL threshold 检测
+- `duckdb_sidecar.py` — Client 端按需证据查询
+- `query_gateway.py` — Server 端本地查询（开发/单机模式）
 
 ---
 
 ## 3. 安全基础设施
-
-### Wazuh
-
-| 组件 | 版本 | 角色 | 端口 |
-|------|------|------|------|
-| **Wazuh Agent** | 4.9.0 | 宿主机上运行，采集日志 | — |
-| **Wazuh Manager** | 4.14.0 | Docker 容器，规则分析 | 1514(tcp+udp), 1515(tcp), 55000(tcp) |
-
-**Manager 内部关键进程：**
-
-| 进程 | 运行用户 | 职责 |
-|------|----------|------|
-| `wazuh-remoted` | wazuh(999) | 接收 Agent 连接和事件数据 (1514) |
-| `wazuh-authd` | root | Agent 注册认证 (1515) |
-| `wazuh-analysisd` | wazuh(999) | **核心**：规则匹配、解码日志、生成告警 |
-| `wazuh-logcollector` | root | 本地日志文件采集 |
-| `wazuh-syscheckd` | root | 文件完整性监控 (FIM) |
-| `wazuh-modulesd` | root | 漏洞扫描、SCA 等模块 |
-| `wazuh-monitord` | wazuh(999) | Agent 状态监控 |
-| `wazuh-db` | wazuh(999) | 内部 SQLite 数据库 |
-| `wazuh-execd` | root | 执行主动响应脚本 |
-| `wazuh-apid` | root | Wazuh REST API (55000) |
-
-**数据卷挂载：**
-```yaml
-volumes:
-  - ./wazuh_logs:/var/ossec/logs   # Manager 的整个日志目录映射到宿主机
-```
-
-这意味着 Manager 容器内的 `/var/ossec/logs/alerts/alerts.json` 实际上就是宿主机上的 `wazuh_logs/alerts/alerts.json`。
-
-**Agent 配置关键点：**
-```xml
-<client>
-  <server>
-    <address>127.0.0.1</address>   <!-- 通过 Docker 端口映射连接 Manager -->
-    <port>1514</port>
-    <protocol>tcp</protocol>
-  </server>
-</client>
-<localfile>
-  <log_format>journald</log_format> <!-- 采集 systemd journal -->
-</localfile>
-```
 
 ### OpenSearch
 
@@ -134,19 +105,11 @@ volumes:
 | **安全** | 已禁用 SSL/认证（开发模式） |
 | **内存** | -Xms4G -Xmx4G |
 
-在本项目中作为**证据底座**，存储 4 个索引：
+在本项目中作为**证据底座**，存储索引：
 - `soc-signals` — 原始信令
 - `soc-evidence` — 标准化证据
 - `soc-analysis` — 研判结果
 - `soc-verification` — 复核结果
-
-### Logstash
-
-| 属性 | 说明 |
-|------|------|
-| **版本** | opensearch-project/logstash-oss-with-opensearch-output-plugin:8.9.0 |
-| **配置** | logstash.conf |
-| **角色** | 日志管道（当前预留，未激活使用） |
 
 ---
 
@@ -189,7 +152,9 @@ data_exfiltration → 阻断外连 + 检查传输 + 数据泄露应急
 
 ### OCSF Mapper (`common/ocsf_mapper.py`)
 
-Wazuh 原始字段 → OCSF-lite 标准字段的映射：
+两套映射函数：
+
+**map_wazuh_to_ocsf()** — Wazuh 告警 → OCSF（兼容旧模式）：
 
 | Wazuh 字段 | OCSF 字段 |
 |-----------|-----------|
@@ -201,13 +166,25 @@ Wazuh 原始字段 → OCSF-lite 标准字段的映射：
 | `description` | `description` |
 | `timestamp` | `timestamp` |
 
+**map_authlog_to_ocsf()** — auth.log 事件 → OCSF：
+
+| auth.log 字段 | OCSF 字段 |
+|--------------|-----------|
+| `src_ip` | `src_ip` |
+| `hostname` | `hostname` |
+| `rule_id` | `rule_id` |
+| `severity` | `severity` |
+| `log_type` | `raw_log` |
+| `description` | `description` |
+| `timestamp` | `timestamp` |
+
 ### Data Readiness Checker (`server/readiness.py`)
 
 4 维度质量评分（满分 100），确定数据是否足以支撑研判：
 
 | 检查项 | 方法 | 扣分 |
 |--------|------|------|
-| 字段覆盖度 | 6 个必需字段齐全率 | 缺失扣 10 分/字段 |
+| 字段覆盖度 | 6 个必需字段齐全率 | 缺失按覆盖率扣分，最高 40 分 |
 | 字段完整性 | 非空值比例低于 50% | 扣 15 分 |
 | 时序一致性 | 时间戳可解析 + 有序 + 跨度 ≥ 30s | 每项不满足扣 10 分 |
 | 唯一性 | evidence_id 无重复 | 有重复扣 10 分 |
@@ -218,7 +195,7 @@ Wazuh 原始字段 → OCSF-lite 标准字段的映射：
 
 防 AI 幻觉的 5 层校验：
 1. **evidence_ref 校验** — 研判引用的证据 ID 必须在证据列表中真实存在
-2. **raw_ref 校验** — 每条证据必须有可追溯的 raw_ref（格式：`{node}/{source}#{timestamp}`）
+2. **raw_ref 校验** — 每条证据必须有可追溯的 raw_ref
 3. **query_id 一致性** — 同一批次证据应来自同一次查询
 4. **lineage_id 完整性** — 每条证据必须有 `query_id:hash` 格式的 lineage_id
 5. **结论合理性** — 检测绝对化表述黑名单（"完全控制"、"已被攻陷"、"APT攻击"等 10 个短语）
@@ -231,15 +208,13 @@ Wazuh 原始字段 → OCSF-lite 标准字段的映射：
 
 ## 6. 容器化
 
-### Docker Compose 编排（5 个容器）
+### Docker Compose 编排（3 个容器）
 
 | 服务 | 镜像 | 端口映射 |
 |------|------|----------|
 | `opensearch` | opensearchproject/opensearch:3.5.0 | 9200 |
 | `dashboards` | opensearchproject/opensearch-dashboards:3.5.0 | 5601 |
-| `wazuh-manager` | wazuh/wazuh-manager:4.14.0 | 1514, 1515, 55000 |
 | `nats` | nats:2.10-alpine | 4222, 8222 |
-| `logstash` | opensearch-project/logstash-oss... | — |
 
 **网络**: 所有容器接入 `aisoc-net`（Docker Compose 自动加项目名前缀 → `soc_aisoc-net`）
 
@@ -269,7 +244,7 @@ CMD ["python", "MVP/main.py"]
 
 5 个功能卡片：
 1. **数据就绪度卡片** — 评分、等级、有效证据数
-2. **标准化证据卡片** — 每条证据以 expander 展开，显示 ID/时间/级别/IP/主机/日志
+2. **标准化证据卡片** — 每条证据以 expander 展开
 3. **AI 研判结论卡片** — 结论、置信度、事件类型、优先级、处置建议
 4. **复核结果卡片** — 通过/未通过、发现的问题
 5. **完整研判报告卡片** — Markdown 渲染
@@ -305,38 +280,33 @@ streamlit-autorefresh 1.0+
 Pydantic           2.5+
 aiohttp            3.9+
 httpx              0.25+
-Wazuh Agent        4.9.0
-Wazuh Manager      4.14.0
 OpenSearch         3.5.0
 NATS Server        2.10
 ```
 
 ## 9. 数据格式一览
 
-### 告警 (NDJSON)
+### auth.log 原始行 (syslog)
+```
+May 22 10:15:32 hostname sshd[12345]: Failed password for root from 192.168.1.100 port 22 ssh2
+```
+
+### 解析后事件 (auth_events 表)
 ```json
-{"timestamp":"2026-05-15T12:43:47.000+00:00","rule":{"level":5,"description":"PAM: User login failed.","id":"5503",...},"agent":{"id":"001","name":"37vwmu3rudbyc0v","ip":"127.0.0.1"},"manager":{"name":"0f98319a2063"},"id":"1778687135.725724","full_log":"May 15...","location":"journald"}
+{"timestamp":"2026-05-22T10:15:32","hostname":"hostname","process":"sshd","pid":12345,"src_ip":"192.168.1.100","src_port":22,"dst_user":"root","log_type":"ssh_failed_password"}
 ```
 
 ### 微信号
 ```json
-{"signal_id":"sig-bbbe6f60","node_id":"37vwmu3rudbyc0v","rule_id":"5502","src_ip":"127.0.0.1","event_time":"...","suggested_logs":["wazuh_alerts","auth.log"],"raw_ref":"wazuh-alerts#...#37vwmu3rudbyc0v"}
+{"signal_id":"sig-bbbe6f60","node_id":"node-web-01","rule_id":"LOCAL_SSH_BRUTE_FORCE","severity":"high","src_ip":"192.168.1.100","event_time":"2026-05-22T10:15:32Z","suggested_logs":["auth_log"],"raw_ref":"node-web-01/auth_log#192.168.1.100#...","matched_count":5}
 ```
 
 ### 查询请求
 ```json
-{"query_id":"qry-fdb61cbb","case_id":"case-soc-001","node_id":"37vwmu3rudbyc0v","signal_id":"sig-bbbe6f60","source":"wazuh_alerts","filters":{"rule.id":"5503"},"limit":20}
+{"query_id":"qry-fdb61cbb","case_id":"case-soc-001","node_id":"node-web-01","signal_id":"sig-bbbe6f60","source":"auth_log","filters":{"src_ip":"192.168.1.100"},"limit":20}
 ```
 
 ### 证据 (OCSF-lite)
 ```json
-{"evidence_id":"ev-abc12345","query_id":"qry-fdb61cbb","node_id":"node-web-01","raw_ref":"node-web-01/wazuh_alerts#...","lineage_id":"qry-fdb61cbb:12345","hash":"abc123","timestamp":"...","rule_id":"5503","agent_name":"...","src_ip":"127.0.0.1","rows_returned":15}
-```
-
-### NATS 主题
-```
-soc.signals.{node_id}     → 微信号，每个边缘节点独立主题 (JetStream)
-soc.query.requests        → 查询请求，所有节点共享 (JetStream)
-soc.query.results         → 查询结果，所有节点共享 (JetStream)
-soc.monitor.events        → 监控事件，best-effort 发布 (Core Pub/Sub)
+{"evidence_id":"ev-abc12345","query_id":"qry-fdb61cbb","node_id":"node-web-01","raw_ref":"node-web-01/auth_log#...","lineage_id":"qry-fdb61cbb:abc123","hash":"abc123","timestamp":"...","rule_id":"LOCAL_SSH_BRUTE_FORCE","hostname":"...","src_ip":"192.168.1.100","log_type":"ssh_failed_password"}
 ```

@@ -37,31 +37,31 @@
 │ Client 端 (每节点独立端口)                                │
 │                                                          │
 │  node-web-01                                              │
-│    SignalWatcher   :8101   新增 — 告警监控状态           │
+│    DetectionEngine  :8101   新增 — 检测引擎状态           │
 │    DuckDB Sidecar  :8111   新增 — 查询统计               │
 │                                                          │
 │  node-web-02                                              │
-│    SignalWatcher   :8102   新增                          │
+│    DetectionEngine  :8102   新增                          │
 │    DuckDB Sidecar  :8112   新增                          │
 │                                                          │
 │  node-db-01                                               │
-│    SignalWatcher   :8103   新增                          │
+│    DetectionEngine  :8103   新增                          │
 │    DuckDB Sidecar  :8113   新增                          │
 └─────────────────────────────────────────────────────────┘
 ```
 
 ### 每个端点暴露的数据
 
-**SignalWatcher (:81xx)**
+**DetectionEngine (:81xx)**
 ```json
 GET /status
 {
-  "component": "SignalWatcher",
+  "component": "DetectionEngine",
   "node_id": "node-web-01",
-  "file": "/home/admin/SOC/wazuh_logs/alerts/alerts.json",
+  "file": "/var/log/auth.log",
   "file_size_bytes": 468434,
   "last_offset": 468000,
-  "seen_alerts": 237,
+  "events_parsed": 237,
   "signals_published": 20,
   "last_signal_at": "2026-05-15T20:43:47",
   "last_check_at": "2026-05-15T20:44:02",
@@ -211,7 +211,7 @@ layout["body"].split_row(
 
 | 文件 | 改动 |
 |------|------|
-| `MVP/client/signal_watcher.py` | 加 aiohttp 端点暴露监控状态 |
+| `MVP/client/detection_engine.py` | 加 aiohttp 端点暴露检测状态 |
 | `MVP/client/duckdb_sidecar.py` | 加 aiohttp 端点暴露查询统计 |
 | `MVP/server/signal_listener.py` | 加 aiohttp 端点暴露信令统计 |
 | `MVP/server/query_result_listener.py` | 加 aiohttp 端点暴露结果统计 |
@@ -240,9 +240,9 @@ layout["body"].split_row(
 ┌──────────────────────────────────────────────────┐
 │ Docker 容器                                       │
 │  ┌─────────────┐  ┌──────┐  ┌────────────────┐  │
-│  │wazuh-manager│  │ NATS │  │ OpenSearch     │  │
-│  └──────┬──────┘  └──┬───┘  └────────────────┘  │
-└─────────┼─────────────┼──────────────────────────┘
+│  │    NATS     │  │ OpenSearch     │              │
+│  └──────┬──────┘  └────────────────┘              │
+└─────────┼─────────────────────────────────────────┘
           │             │
     ┌─────┴─────┐  ┌────┴────┐  ┌──────────┐
     │ Client-A  │  │Client-B │  │ Client-C │
@@ -287,38 +287,24 @@ bash scripts/trigger_test.sh 2 5763 node-db-01
 
 ### 数据源策略
 
-**方案 A: 共享文件 + agent.name 过滤（推荐用于模拟）**
+**方案 A: DetectionEngine + 独立 auth.log（推荐）**
 
-所有 Client 读取同一个 `alerts.json`，通过 DuckDB SQL 中的 `WHERE agent.name = '{node_id}'` 获取各自节点的事件。
+每个 Client 的 DetectionEngine 独立 tail 各自的日志文件（或共享 `/var/log/auth.log` 但通过 hostname 过滤事件归属）。
 
-```python
-# Client-A (node-web-01)
-SELECT * FROM read_json_auto('alerts.json')
-WHERE "agent"."name" = 'node-web-01'
+**方案 B: 共享 auth.log + hostname 过滤（模拟用）**
 
-# Client-B (node-web-02)
-SELECT * FROM read_json_auto('alerts.json')
-WHERE "agent"."name" = 'node-web-02'
-```
+所有 Client 读取同一个 auth.log，通过 DuckDB SQL 中的 `WHERE hostname = '{node_id}'` 获取各自节点的事件。
 
-`trigger_test.sh` 改造：支持指定 `agent.name` 字段，模拟不同节点的告警。
-
-**方案 B: 独立数据文件（接近生产）**
+**方案 C: 独立数据文件（接近生产）**
 
 ```
-wazuh_logs/
-  ├── node-web-01/alerts.json
-  ├── node-web-02/alerts.json
-  └── node-db-01/alerts.json
+/var/log/
+  ├── node-web-01/auth.log
+  ├── node-web-02/auth.log
+  └── node-db-01/auth.log
 ```
 
-每个 Client 只读自己节点的文件。更接近真实部署（每个 Agent 独立上报）。
-
-**方案 C: 混合模式**
-
-- 信号监控共享 `alerts.json`（用 `agent.name` 过滤）
-- DuckDB 查询各自独立的文件
-- 兼顾简单性和真实性
+每个 Client 只 tail 自己节点的 auth.log。最接近真实多节点部署。需要配合 syslog 转发配置。
 
 ### 代码改动
 
@@ -338,7 +324,7 @@ wazuh_logs/
 |------|-----------|
 | DuckDB 读同一文件 | DuckDB 只读不写，多进程共享读没问题 |
 | NATS consumer | 每个 Client 用 `{node_id}` 构造唯一 consumer 名 |
-| SignalWatcher 去重 | 每个 Client 有自己的 `seen_ids` 集合，互不影响 |
+| DetectionEngine 去重 | 每个 Client 独立 tail 自己的 byte offset，互不影响 |
 | 端口 | 通过环境变量分配不同端口 |
 | 证据输出 | Server 端 `outputs/` 目录用时间戳区分，不冲突 |
 

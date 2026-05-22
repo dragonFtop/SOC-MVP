@@ -11,7 +11,7 @@ SERVER_DIR = os.path.join(BASE_DIR, "server")
 # 项目根目录（SOC/）
 ROOT_DIR = BASE_DIR.parent
 
-# Wazuh 日志目录（你真实的日志路径）
+# 告警日志目录
 WAZUH_LOGS_DIR = os.path.join(ROOT_DIR, "wazuh_logs")
 ALERTS_JSON_PATH = os.path.join(WAZUH_LOGS_DIR, "alerts", "alerts.json")
 
@@ -43,6 +43,12 @@ DEFAULT_RULE_ID = "5503"          # SSH 登录失败
 DEFAULT_NODE_ID = "node-web-01"  # 默认边缘节点
 DEFAULT_CASE_ID = "case-soc-001" # 默认案件 ID
 DEFAULT_QUERY_LIMIT = 20         # 默认查询数量
+
+# ====================== Auth Log Detection Engine ======================
+AUTH_LOG_PATH = "/var/log/auth.log"              # System auth log path
+DETECTION_RULES_PATH = os.path.join(CLIENT_DIR, "detection_rules.yaml")
+EVENT_RETENTION_MINUTES = 60                     # Cleanup events older than N minutes
+DUCKDB_PATH = None                               # None = in-memory, or path for persistent DB
 
 # ====================== LLM 配置 ======================
 # 通过环境变量配置，与 Claude Code 共享 ANTHROPIC_* 环境变量

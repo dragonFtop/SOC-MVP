@@ -232,7 +232,7 @@ def standardize_evidence(
             source=request.source,
             rule_id=ocsf.get("rule_id", ""),
             description=ocsf.get("description", ""),
-            src_ip=ocsf.get("src_ip", ""),
+            src_ip=ocsf.get("src_ip", "0.0.0.0"),
             hostname=ocsf.get("hostname", ""),
             severity=ocsf.get("severity"),
             raw_log=ocsf.get("raw_log"),

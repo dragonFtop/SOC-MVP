@@ -1,0 +1,104 @@
+# Local Detection Rules for auth.log
+# Each rule defines:
+#   - match: which process and message patterns to look for
+#   - threshold: how many matches in what time window triggers a signal
+#   - cooldown: minimum seconds between repeated signals for the same group
+#   - signal: what event_type and priority to report
+
+rules:
+  - id: "LOCAL_SSH_BRUTE_FORCE"
+    name: "SSH Brute Force Attack"
+    severity: "high"
+    category: "brute_force"
+    description: "Multiple failed SSH login attempts from the same source IP"
+    match:
+      process: sshd
+      patterns:
+        - "Failed password"
+        - "authentication failure"
+    threshold:
+      count: 5
+      window_seconds: 300
+      group_by: src_ip
+    cooldown_seconds: 600
+    signal:
+      priority: 5
+      event_type: "brute_force"
+      suggested_logs: ["auth_log"]
+
+  - id: "LOCAL_SSH_SCAN"
+    name: "SSH Scan Detection"
+    severity: "medium"
+    category: "reconnaissance"
+    description: "Multiple connection probes from the same IP (scanner behavior)"
+    match:
+      process: sshd
+      patterns:
+        - "Did not receive identification string"
+        - "Connection closed by"
+    threshold:
+      count: 3
+      window_seconds: 120
+      group_by: src_ip
+    cooldown_seconds: 600
+    signal:
+      priority: 4
+      event_type: "reconnaissance"
+      suggested_logs: ["auth_log"]
+
+  - id: "LOCAL_SUDO_FAILURES"
+    name: "Sudo Authentication Failures"
+    severity: "medium"
+    category: "privilege_escalation"
+    description: "Repeated failed sudo authentication attempts"
+    match:
+      process: sudo
+      patterns:
+        - "authentication failure"
+    threshold:
+      count: 3
+      window_seconds: 120
+      group_by: dst_user
+    cooldown_seconds: 600
+    signal:
+      priority: 4
+      event_type: "privilege_escalation"
+      suggested_logs: ["auth_log"]
+
+  - id: "LOCAL_SU_FAILURES"
+    name: "Su Authentication Failures"
+    severity: "medium"
+    category: "privilege_escalation"
+    description: "Repeated failed su attempts"
+    match:
+      process: su
+      patterns:
+        - "FAILED SU"
+    threshold:
+      count: 3
+      window_seconds: 120
+      group_by: dst_user
+    cooldown_seconds: 600
+    signal:
+      priority: 4
+      event_type: "privilege_escalation"
+      suggested_logs: ["auth_log"]
+
+  - id: "LOCAL_SSH_ACCEPTED"
+    name: "SSH Successful Login"
+    severity: "low"
+    category: "normal"
+    description: "Successful SSH login (informational)"
+    match:
+      process: sshd
+      patterns:
+        - "Accepted password"
+        - "Accepted publickey"
+    threshold:
+      count: 1
+      window_seconds: 1
+    cooldown_seconds: 0
+    signal:
+      priority: 2
+      event_type: "normal"
+      suggested_logs: ["auth_log"]

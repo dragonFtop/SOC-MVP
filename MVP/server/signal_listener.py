@@ -70,18 +70,36 @@ class SignalListener:
                 from .opensearch_loader import OpenSearchClient
                 os_client = OpenSearchClient()
                 os_client.index("soc-signals", signal)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"⚠️ [SignalListener] OpenSearch 信令索引失败: {e}")
 
             # 触发按需查询
             query_id = f"qry-{uuid.uuid4().hex[:8]}"
+            source = signal.get("suggested_logs", ["wazuh-alerts"])[0]
+
+            if source == "auth_log":
+                # Build auth_log-specific filters for the DetectionEngine
+                filters = {}
+                src_ip = signal.get("src_ip")
+                if src_ip:
+                    filters["src_ip"] = src_ip
+                detection_rule_id = signal.get("detection_rule_id", "")
+                if "SSH" in detection_rule_id:
+                    filters["process"] = "sshd"
+                elif "SUDO" in detection_rule_id:
+                    filters["process"] = "sudo"
+                elif "SU_" in detection_rule_id:
+                    filters["process"] = "su"
+            else:
+                filters = {"rule.id": signal.get("rule_id")}
+
             query_request = {
                 "query_id": query_id,
                 "case_id": DEFAULT_CASE_ID,
                 "node_id": signal.get("node_id"),
                 "signal_id": signal.get("signal_id"),
-                "source": signal.get("suggested_logs", ["wazuh-alerts"])[0],
-                "filters": {"rule.id": signal.get("rule_id")},
+                "source": source,
+                "filters": filters,
                 "limit": 20,
             }
 
