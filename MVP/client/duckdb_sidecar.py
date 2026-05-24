@@ -194,6 +194,11 @@ class DuckDBQueryEngine:
             sql = request.get("sql", "")
             source = request.get("source", "wazuh-alerts")
 
+            # Multi-node: skip queries not targeted at this node
+            target_node = request.get("node_id")
+            if target_node and target_node != self.node_id:
+                return
+
             print(f"📩 [DuckDBSidecar:{self.node_id}] 收到查询: {query_id} (source={source})")
             if self.monitor:
                 await self.monitor.query_received(query_id=query_id, node_id=self.node_id)

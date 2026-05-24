@@ -4,6 +4,7 @@
 # 用法: bash scripts/run_server.sh
 
 set -e
+export PYTHONUNBUFFERED=1
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR/.."
@@ -58,11 +59,11 @@ echo "🖥️ 启动服务端核心组件..."
 echo ""
 echo "即将启动:"
 echo "  - Query Gateway (FastAPI)  -> http://0.0.0.0:8000"
+echo "  - Web Console (Streamlit)  -> http://localhost:8500"
 echo "  - Signal Listener (NATS)   -> 监听 soc.signals.*"
 echo "  - Result Listener (NATS)   -> 监听 soc.query.results"
-echo "  - Dashboard (Streamlit)    -> http://localhost:8501"
 echo ""
-echo "在另一个终端窗口运行: bash scripts/run_client.sh"
+echo "在另一个终端窗口运行: bash scripts/run_client.sh <client-id>"
 echo "================================================"
 echo ""
 

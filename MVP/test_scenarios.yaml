@@ -1,0 +1,78 @@
+# AI-SOC 安全测试场景配置
+# ===========================
+# 每个场景定义:
+#   id              - 唯一标识
+#   name            - 显示名称
+#   category        - 分类 (brute_force / reconnaissance / privilege_escalation / custom)
+#   description     - 场景描述
+#   rule_triggers   - 预期触发的检测规则
+#   default_count   - 默认注入条数
+#   log_format      - syslog 格式模板
+#   variables       - 模板变量: 固定值或列表(随机选一)
+
+scenarios:
+  - id: ssh_brute_force
+    name: "SSH 暴力破解"
+    category: brute_force
+    description: "模拟攻击者从同一IP对多个用户名尝试SSH密码登录"
+    rule_triggers: "LOCAL_SSH_BRUTE_FORCE (≥5次/300s 同IP)"
+    default_count: 6
+    log_format: "{ts} {host} sshd[{pid}]: Failed password for {user} from {ip} port {port} ssh2\n"
+    variables:
+      ip: "10.0.99.1"
+      user: ["root", "admin", "deploy", "oracle", "postgres", "test", "guest", "ubuntu"]
+
+  - id: ssh_scan
+    name: "SSH 端口扫描"
+    category: reconnaissance
+    description: "模拟攻击者扫描SSH端口，探测开放服务"
+    rule_triggers: "LOCAL_SSH_SCAN (≥3次/120s 同IP)"
+    default_count: 4
+    log_format: "{ts} {host} sshd[{pid}]: Did not receive identification string from {ip} port {port}\n"
+    variables:
+      ip: "10.0.88.1"
+
+  - id: sudo_failure
+    name: "Sudo 提权失败"
+    category: privilege_escalation
+    description: "模拟用户多次尝试sudo认证失败"
+    rule_triggers: "LOCAL_SUDO_FAILURES (≥3次/120s 同用户)"
+    default_count: 4
+    log_format: "{ts} {host} sudo[{pid}]: pam_unix(sudo:auth): authentication failure; logname= uid=0 euid=0 tty=/dev/pts/0 ruser= rhost=  user={user}\n"
+    variables:
+      user: ["admin"]
+
+  - id: su_failure
+    name: "Su 切换用户失败"
+    category: privilege_escalation
+    description: "模拟用户多次尝试su切换身份失败"
+    rule_triggers: "LOCAL_SU_FAILURES (≥3次/120s 同用户)"
+    default_count: 4
+    log_format: "{ts} {host} su[{pid}]: FAILED SU (to {user}) for nobody on /dev/pts/0\n"
+    variables:
+      user: ["root"]
+
+  - id: ssh_accepted
+    name: "SSH 成功登录"
+    category: normal
+    description: "模拟正常SSH公钥登录 (测试通知类规则)"
+    rule_triggers: "LOCAL_SSH_ACCEPTED (任何次数)"
+    default_count: 1
+    log_format: "{ts} {host} sshd[{pid}]: Accepted publickey for {user} from {ip} port {port} ssh2: RSA SHA256:abc123\n"
+    variables:
+      ip: "192.168.1.100"
+      user: ["admin"]
+
+  - id: multi_vector
+    name: "混合攻击 (SSH + Sudo)"
+    category: custom
+    description: "先SSH爆破再尝试提权，模拟完整攻击链"
+    rule_triggers: "LOCAL_SSH_BRUTE_FORCE + LOCAL_SUDO_FAILURES"
+    default_count: 10
+    log_format: |
+      {ts} {host} sshd[{pid}]: Failed password for {user} from {ip} port {port} ssh2
+      {ts} {host} sudo[{pid_sudo}]: pam_unix(sudo:auth): authentication failure; logname= uid=0 euid=0 tty=/dev/pts/0 ruser= rhost=  user={user}
+    variables:
+      ip: "10.0.99.1"
+      user: ["root", "admin", "deploy"]
+    multi_line: true

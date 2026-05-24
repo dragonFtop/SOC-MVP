@@ -56,14 +56,15 @@ async def ensure_stream(js, name: str, subjects: list[str]):
 
 async def subscribe_safe(js, subject: str, durable: str,
                          stream_names: Optional[list[str]] = None,
-                         deliver_policy: str = "new"):
+                         deliver_policy: str = "all"):
     """
     安全订阅 NATS JetStream 主题。
 
     自动处理三种常见故障：
       1. Stream 不存在 → 创建 Stream 后重试
       2. Consumer 残留冲突 → 删除残留 consumer 后重试
-      3. deliver_policy="new" 只接收新消息，避免重启重放积压
+      3. deliver_policy="all" 确保 Server 后启动也能收到 Client 先发布的信号；
+         持久化的 durable consumer 不会重复投递已 ACK 的消息
     """
     if stream_names is None:
         stream_names = _streams_for_subject(subject)
@@ -72,11 +73,11 @@ async def subscribe_safe(js, subject: str, durable: str,
         return await js.subscribe(subject, durable=durable, manual_ack=True,
                                   deliver_policy=deliver_policy)
 
-    # 第一次尝试
+    # 第一次尝试 (durable consumer 存在则恢复 ACK 位置)
     try:
         return await _try_subscribe()
     except Exception as e1:
-        # 如果是 Stream 不存在，先创建再重试
+        # Stream 不存在 → 创建后重试
         for name in stream_names:
             try:
                 subs = _SUBJECT_STREAM_MAP.get(subject, (name, [subject]))[1]
@@ -84,14 +85,7 @@ async def subscribe_safe(js, subject: str, durable: str,
                 subs = [subject]
             await ensure_stream(js, name, subs)
 
-        # 清理可能残留的 consumer
-        for name in stream_names:
-            try:
-                await js.delete_consumer(name, durable)
-            except Exception:
-                pass
-
-        # 第二次尝试
+        # 第二次尝试 (不删除 consumer，保留 ACK 历史)
         try:
             return await _try_subscribe()
         except Exception as e2:

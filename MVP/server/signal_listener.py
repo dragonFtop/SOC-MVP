@@ -58,6 +58,19 @@ class SignalListener:
         """
         async def _process():
             signal = json.loads(msg.data.decode())
+
+            # 跳过超过 5 分钟的旧信号 (流积压保护)
+            signal_ts = signal.get("event_time", "")
+            if signal_ts:
+                try:
+                    from datetime import datetime, timedelta, timezone
+                    ts = datetime.fromisoformat(signal_ts)
+                    if datetime.now(timezone.utc) - ts > timedelta(minutes=5):
+                        print(f"   ⏭️ [SignalListener] 跳过过期信号: {signal.get('signal_id')} (ts={signal_ts})")
+                        return
+                except (ValueError, TypeError):
+                    pass  # 无法解析时间戳，放行
+
             print(f"📩 [SignalListener] 收到信号: {signal.get('signal_id')}")
             if self.monitor:
                 await self.monitor.signal_received(

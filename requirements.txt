@@ -6,7 +6,8 @@ nats-py>=2.8.0        # NATS JetStream 客户端（边缘←→中心通信）
 fastapi>=0.104.0      # Query Gateway 框架
 uvicorn[standard]>=0.24.0  # ASGI 服务器
 duckdb>=0.9.0         # 嵌入式查询引擎
-anthropic>=0.40.0     # Anthropic API 客户端（Agent Team LLM 分析）
+anthropic>=0.40.0     # Anthropic API 客户端（备选 LLM）
+openai>=1.0.0          # OpenAI SDK（DeepSeek API 兼容）
 
 # OpenSearch 客户端
 opensearch-py>=2.4.0
@@ -25,3 +26,5 @@ httpx>=0.25.0
 # 工具
 python-multipart>=0.0.6  # FastAPI 文件上传
 python-dateutil>=2.8.0   # 日期解析
+pyyaml>=6.0              # YAML 配置解析
+python-dotenv>=1.0.0     # .env 环境变量加载

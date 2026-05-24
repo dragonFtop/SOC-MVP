@@ -314,7 +314,7 @@ if __name__ == "__main__":
             with open(f"{OUTPUTS_DIR}/current_timestamp.txt", "r") as f:
                 timestamp = f.read().strip()
         except FileNotFoundError:
-            print("⚠️ 请提供时间戳参数或先运行 evidence_builder.py")
+            print("⚠️ 请提供时间戳参数或先运行 detection pipeline")
             sys.exit(1)
 
     result = verify(timestamp)

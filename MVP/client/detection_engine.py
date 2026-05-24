@@ -60,6 +60,7 @@ class DetectionEngine:
             rules_path = drp
         self.rules_path = rules_path
         self.rules = self._load_rules()
+        self._rules_mtime = os.path.getmtime(rules_path) if os.path.exists(rules_path) else 0
 
         # State
         self.last_offset = 0
@@ -492,7 +493,16 @@ class DetectionEngine:
                 if signals:
                     await self._publish_signals(signals)
 
-                # 5. Periodic cleanup
+                # 5. Hot-reload rules if file changed
+                if os.path.exists(self.rules_path):
+                    mtime = os.path.getmtime(self.rules_path)
+                    if mtime > self._rules_mtime:
+                        self.rules = self._load_rules()
+                        self._rules_mtime = mtime
+                        self.cooldowns.clear()
+                        print(f"   🔄 [DetectionEngine] Rules reloaded ({len(self.rules)} rules), cooldowns cleared")
+
+                # 6. Periodic cleanup
                 self._cleanup_counter += 1
                 if self._cleanup_counter >= 30:
                     self._cleanup_old_events()

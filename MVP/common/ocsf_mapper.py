@@ -59,6 +59,9 @@ def map_wazuh_to_ocsf(evidence_item: dict) -> dict:
         "evidence_id": evidence_item.get("evidence_id"),
         "source": "wazuh-alerts",
         "raw_log": evidence_item.get("full_log"),
+        "raw_ref": evidence_item.get("raw_ref", ""),
+        "lineage_id": evidence_item.get("lineage_id", ""),
+        "query_id": evidence_item.get("query_id", ""),
     }
 
 
@@ -115,4 +118,7 @@ def map_authlog_to_ocsf(evidence_item: dict) -> dict:
         "evidence_id": evidence_item.get("evidence_id"),
         "source": "auth_log",
         "raw_log": evidence_item.get("raw_line", ""),
+        "raw_ref": evidence_item.get("raw_ref", ""),
+        "lineage_id": evidence_item.get("lineage_id", ""),
+        "query_id": evidence_item.get("query_id", ""),
     }

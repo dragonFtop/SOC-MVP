@@ -6,7 +6,7 @@ AI-SOC Server 统一入口
   - Signal Listener       (signal_listener.py)        - NATS 信令监听
   - Query Result Listener (query_result_listener.py)  - 查询结果接收与持久化
   - Query Gateway         (query_gateway.py)          - FastAPI 查询网关
-  - Dashboard             (dashboard.py)              - Streamlit 可视化
+  - Web Console           (web_console/)             - 统一运维面板
 
 在独立终端窗口中运行，展示中心侧实时处理过程。
 """
@@ -31,13 +31,17 @@ def server_log(msg: str):
 
 async def run_server():
     """启动所有服务端组件 - 组装各个模块并以 asyncio 并发运行"""
-    from server.signal_listener import SignalListener
-    from server.query_result_listener import QueryResultListener
-    from server.query_gateway import run_gateway
+    from config import validate_config
 
     server_log("=" * 50)
     server_log("  AI-SOC Server - 中心侧安全运营平台")
     server_log("=" * 50)
+
+    validate_config()
+
+    from server.signal_listener import SignalListener
+    from server.query_result_listener import QueryResultListener
+    from server.query_gateway import run_gateway
     server_log(f"启动时间: {time.strftime('%Y-%m-%d %H:%M:%S')}")
     server_log(f"NATS 服务器: {NATS_SERVERS}")
     server_log("")
@@ -47,38 +51,24 @@ async def run_server():
     gateway_thread.start()
     await asyncio.sleep(1)
 
-    # 2. Dashboard (独立线程 - 通过 subprocess 启动，避免 import 触发 Streamlit 模块代码)
-    def _launch_dashboard():
+    # 2. Web Console - 统一运维控制台 (端口 8500)
+    #    集成: 首页/Server监控/Client面板/数据查看/Client注册/节点注册
+    def _launch_web_console():
         import subprocess
-        server_log("Dashboard 启动中 -> http://localhost:8501")
+        web_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "web_console")
+        server_log("Web Console 启动中 -> http://localhost:8500")
         subprocess.run(
             [sys.executable, "-m", "streamlit", "run",
-             os.path.join(os.path.dirname(__file__), "dashboard.py"),
-             "--server.port", "8501",
+             os.path.join(web_dir, "🏠_首页.py"),
+             "--server.port", "8500",
              "--server.headless", "true",
              "--browser.gatherUsageStats", "false"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
 
-    dashboard_thread = threading.Thread(target=_launch_dashboard, daemon=True)
-    dashboard_thread.start()
-    await asyncio.sleep(1)
-
-    # 3. Monitor Dashboard (独立线程)
-    def _launch_monitor():
-        import subprocess
-        server_log("Monitor Dashboard 启动中 -> http://localhost:8502")
-        subprocess.run(
-            [sys.executable, "-m", "streamlit", "run",
-             os.path.join(os.path.dirname(__file__), "monitor_dashboard.py"),
-             "--server.port", "8502",
-             "--server.headless", "true",
-             "--browser.gatherUsageStats", "false"],
-        )
-
-    monitor_thread = threading.Thread(target=_launch_monitor, daemon=True)
-    monitor_thread.start()
+    web_thread = threading.Thread(target=_launch_web_console, daemon=True)
+    web_thread.start()
     await asyncio.sleep(1)
 
     # 4. Signal Listener + Query Result Listener (asyncio 并发)
@@ -90,11 +80,10 @@ async def run_server():
 
     server_log("")
     server_log("所有服务已启动:")
-    server_log("  - Query Gateway:  http://localhost:8000")
-    server_log("  - Dashboard:         http://localhost:8501")
-    server_log("  - Monitor Dashboard: http://localhost:8502")
-    server_log("  - Signal Listener:   监听 NATS 信号")
-    server_log("  - Result Listener:   监听 NATS 查询结果")
+    server_log("  - Query Gateway:   http://localhost:8000")
+    server_log("  - Web Console:     http://localhost:8500")
+    server_log("  - Signal Listener: 监听 NATS 信号")
+    server_log("  - Result Listener: 监听 NATS 查询结果")
     server_log("")
     server_log("等待客户端连接...")
     server_log("  在另一个终端窗口运行: bash run_client.sh")

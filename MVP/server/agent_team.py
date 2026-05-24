@@ -9,45 +9,71 @@ Agent Team - 多Agent安全事件分析架构
   4. 只读标准字段与 evidence_ref，保证数据一致性
 
 支持两种模式：
-  - LLM 模式（默认）：调用 Anthropic API 进行智能研判
+  - LLM 模式（默认）：调用 DeepSeek API 进行智能研判
   - Rule 模式（回退）：使用硬编码规则引擎
 
 对应实现方案：第七章 - Agent Team 简化研判
 """
 
 import json
+import os as _os
+import sys as _sys
 import uuid
 from datetime import datetime
 from typing import Optional
 
+# 确保 MVP/ 在 Python path 中（兼容直接运行）
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+
 from config import (
     OUTPUTS_DIR,
     DEFAULT_RULE_ID,
+    DEEPSEEK_API_KEY,
+    DEEPSEEK_BASE_URL,
+    DEEPSEEK_MODEL,
+    LLM_MODEL_TRIAGE,
+    LLM_MODEL_ATTACK_CHAIN,
+    LLM_MODEL_REPORT,
     ANTHROPIC_API_KEY,
     ANTHROPIC_BASE_URL,
     ANTHROPIC_MODEL,
+    LLM_PROVIDER,
 )
 
 
 def _get_llm_client():
-    """延迟初始化 Anthropic 客户端"""
-    try:
-        from anthropic import Anthropic
-        import os as _os
-        # 临时清除代理环境变量，避免 SOCKS 代理导致 httpx 崩溃
-        saved = {}
-        for key in ("ALL_PROXY", "HTTP_PROXY", "HTTPS_PROXY", "all_proxy", "http_proxy", "https_proxy"):
-            saved[key] = _os.environ.pop(key, None)
+    """延迟初始化 LLM 客户端 (DeepSeek 或 Anthropic)。无 API key 时返回 None。"""
+    if LLM_PROVIDER == "anthropic":
+        if not ANTHROPIC_API_KEY:
+            return None
         try:
-            client = Anthropic(
-                api_key=ANTHROPIC_API_KEY,
-                base_url=ANTHROPIC_BASE_URL,
-            )
-        finally:
-            for key, val in saved.items():
-                if val is not None:
-                    _os.environ[key] = val
-        return client
+            from anthropic import Anthropic
+            import os as _os
+            saved = {}
+            for key in ("ALL_PROXY", "HTTP_PROXY", "HTTPS_PROXY", "all_proxy", "http_proxy", "https_proxy"):
+                saved[key] = _os.environ.pop(key, None)
+            try:
+                client = Anthropic(
+                    api_key=ANTHROPIC_API_KEY,
+                    base_url=ANTHROPIC_BASE_URL,
+                )
+            finally:
+                for key, val in saved.items():
+                    if val is not None:
+                        _os.environ[key] = val
+            return ("anthropic", client)
+        except ImportError:
+            return None
+
+    # 默认 DeepSeek (OpenAI 兼容接口)
+    if not DEEPSEEK_API_KEY:
+        return None
+    try:
+        from openai import OpenAI
+        return ("openai", OpenAI(
+            api_key=DEEPSEEK_API_KEY,
+            base_url=DEEPSEEK_BASE_URL,
+        ))
     except ImportError:
         return None
 
@@ -144,29 +170,44 @@ def _build_evidence_summary(evidence: list) -> str:
     return "\n".join(lines)
 
 
-def _call_llm(system_prompt: str, user_message: str) -> Optional[dict]:
+def _call_llm(system_prompt: str, user_message: str, max_tokens: int = 1024, model: str = None) -> Optional[dict]:
     """
-    调用 Anthropic API 进行推理，返回 JSON 结果
+    调用 LLM API 进行推理，返回 JSON 结果。
 
-    Returns:
-        dict 或 None（失败时）
+    Args:
+        model: 覆盖默认模型 (DeepSeek) 或 Anthropic 模型名
     """
-    client = _get_llm_client()
-    if client is None:
+    client_info = _get_llm_client()
+    if client_info is None:
         return None
 
+    provider, client = client_info
+
     try:
-        response = client.messages.create(
-            model=ANTHROPIC_MODEL,
-            max_tokens=1024,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_message}],
-        )
-        # 从响应中提取文本（兼容 TextBlock 和 ThinkingBlock）
-        text = ""
-        for block in response.content:
-            if hasattr(block, "text"):
-                text += block.text
+        if provider == "anthropic":
+            response = client.messages.create(
+                model=model or ANTHROPIC_MODEL,
+                max_tokens=max_tokens,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_message}],
+            )
+            text = ""
+            for block in response.content:
+                if hasattr(block, "text"):
+                    text += block.text
+        else:
+            # DeepSeek / OpenAI 兼容接口
+            response = client.chat.completions.create(
+                model=model or DEEPSEEK_MODEL,
+                max_tokens=max_tokens,
+                temperature=0.1,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message},
+                ],
+            )
+            text = response.choices[0].message.content or ""
+
         if not text:
             return None
         # 提取 JSON（可能在 ```json 块中）
@@ -187,6 +228,13 @@ def _call_llm(system_prompt: str, user_message: str) -> Optional[dict]:
 
 # 规则引擎的分诊配置（LLM 不可用时的回退）
 TRIAGE_RULES = {
+    # 新版 DetectionEngine 规则
+    "LOCAL_SSH_BRUTE_FORCE": {"event_type": "brute_force", "priority": "high"},
+    "LOCAL_SSH_SCAN": {"event_type": "reconnaissance", "priority": "medium"},
+    "LOCAL_SUDO_FAILURES": {"event_type": "privilege_escalation", "priority": "high"},
+    "LOCAL_SU_FAILURES": {"event_type": "privilege_escalation", "priority": "medium"},
+    "LOCAL_SSH_ACCEPTED": {"event_type": "unknown", "priority": "low"},
+    # 旧版 Wazuh 规则 (兼容)
     DEFAULT_RULE_ID: {"event_type": "brute_force", "priority": "high"},
     "5710": {"event_type": "scanning", "priority": "medium"},
     "5501": {"event_type": "malware_detected", "priority": "critical"},
@@ -225,9 +273,13 @@ class TriageAgent:
                 summary="无证据，无法分诊", confidence="low",
             )
 
-        # 优先尝试 LLM
+        # 优先尝试 LLM (Triage 用轻量模型: deepseek-chat)
         evidence_text = _build_evidence_summary(evidence)
-        llm_result = _call_llm(TRIAGE_SYSTEM_PROMPT, f"请分析以下安全告警证据：\n\n{evidence_text}")
+        llm_result = _call_llm(
+            TRIAGE_SYSTEM_PROMPT,
+            f"请分析以下安全告警证据：\n\n{evidence_text}",
+            model=LLM_MODEL_TRIAGE,
+        )
 
         if llm_result:
             return TriageResult(
@@ -312,11 +364,12 @@ class AttackChainAgent:
         if not evidence:
             return AttackChainResult(chain=[], progress="无证据，无法分析攻击链")
 
-        # 优先尝试 LLM
+        # 优先尝试 LLM (AttackChain 用推理模型: deepseek-reasoner)
         evidence_text = _build_evidence_summary(evidence)
         llm_result = _call_llm(
             ATTACK_CHAIN_SYSTEM_PROMPT,
             f"请将以下证据映射到攻击链阶段：\n\n{evidence_text}",
+            model=LLM_MODEL_ATTACK_CHAIN,
         )
 
         if llm_result:
@@ -374,6 +427,13 @@ class AttackChainAgent:
             return "目标行动(Actions on Objectives)"
         # 按规则ID补充映射
         rule_phase_map = {
+            # 新版 DetectionEngine 规则
+            "LOCAL_SSH_BRUTE_FORCE": "利用(Exploitation)",
+            "LOCAL_SSH_SCAN": "侦查(Reconnaissance)",
+            "LOCAL_SUDO_FAILURES": "目标行动(Actions on Objectives)",
+            "LOCAL_SU_FAILURES": "目标行动(Actions on Objectives)",
+            "LOCAL_SSH_ACCEPTED": "利用(Exploitation)",
+            # 旧版 Wazuh 规则
             DEFAULT_RULE_ID: "利用(Exploitation)",
             "5710": "侦查(Reconnaissance)",
             "5501": "目标行动(Actions on Objectives)",
@@ -456,7 +516,7 @@ class ReportAgent:
     ) -> AnalysisDraft:
         evidence_ref = [ev.get("evidence_id", "") for ev in evidence if ev.get("evidence_id")]
 
-        # 优先尝试 LLM
+        # 优先尝试 LLM (Report 用 chat 模型, tokens 扩容以容纳详细建议)
         llm_result = _call_llm(
             REPORT_SYSTEM_PROMPT,
             f"事件类型: {triage.event_type}\n"
@@ -464,6 +524,8 @@ class ReportAgent:
             f"分诊总结: {triage.summary}\n"
             f"攻击链: {attack_chain.progress}\n"
             f"证据数量: {len(evidence)}",
+            max_tokens=2048,
+            model=LLM_MODEL_REPORT,
         )
 
         if llm_result:
@@ -538,9 +600,7 @@ def _parse_severity(evidence_item: dict) -> int:
 
 # ====================== 独立运行入口 ======================
 if __name__ == "__main__":
-    import sys
-
-    test_path = f"{OUTPUTS_DIR}/test_evidence.json" if len(sys.argv) < 2 else sys.argv[1]
+    test_path = f"{OUTPUTS_DIR}/test_evidence.json" if len(_sys.argv) < 2 else _sys.argv[1]
     try:
         with open(test_path, "r", encoding="utf-8") as f:
             evidence = json.load(f)

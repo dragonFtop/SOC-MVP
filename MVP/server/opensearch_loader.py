@@ -100,7 +100,7 @@ def load_to_opensearch(timestamp: str = None):
         try:
             outputs = sorted(os.listdir(OUTPUTS_DIR), reverse=True)
         except FileNotFoundError:
-            print("⚠️ [OpenSearch] 输出目录不存在，请先运行 main.py")
+            print("⚠️ [OpenSearch] 输出目录不存在，请先启动 Server + Client")
             return
         if not outputs:
             print("⚠️ [OpenSearch] 未找到输出目录")

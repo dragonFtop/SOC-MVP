@@ -25,5 +25,23 @@
     "format": "json",
     "query_engine": "duckdb",
     "retention_days": 30
+  },
+  {
+    "node_id": "node-db-01",
+    "source_name": "auth_log",
+    "source_type": "syslog",
+    "local_path": "simulated_nodes/node-db-01/auth.log",
+    "format": "syslog",
+    "query_engine": "duckdb-sidecar-authlog",
+    "retention_days": 7
+  },
+  {
+    "node_id": "node-app-01",
+    "source_name": "auth_log",
+    "source_type": "syslog",
+    "local_path": "simulated_nodes/node-app-01/auth.log",
+    "format": "syslog",
+    "query_engine": "duckdb-sidecar-authlog",
+    "retention_days": 7
   }
 ]

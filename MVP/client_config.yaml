@@ -1,0 +1,13 @@
+clients:
+- client_id: gateway-guard
+  node_id: node-web-01
+  log_path: simulated_nodes/node-web-01/auth.log
+  description: Web网关日志监控
+- client_id: db-sentinel
+  node_id: node-db-01
+  log_path: simulated_nodes/node-db-01/auth.log
+  description: 数据库服务器监控
+- client_id: app-watcher
+  node_id: node-app-01
+  log_path: simulated_nodes/node-app-01/auth.log
+  description: 应用服务器监控

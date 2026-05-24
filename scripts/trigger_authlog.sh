@@ -13,8 +13,29 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-MODE="${1:-all}"
-ATTEMPTS="${2:-5}"
+
+# ---- 参数解析 (支持任意顺序，--node-id 可放在前后) ----
+NODE_ID=""
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -n|--node-id)
+            NODE_ID="$2"
+            shift 2
+            ;;
+        *)
+            POSITIONAL+=("$1")
+            shift
+            ;;
+    esac
+done
+
+MODE="${POSITIONAL[0]:-all}"
+ATTEMPTS="${POSITIONAL[1]:-5}"
+SIMULATED_LOG=""
+if [ -n "$NODE_ID" ]; then
+    SIMULATED_LOG="$SCRIPT_DIR/../simulated_nodes/$NODE_ID/auth.log"
+fi
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -187,7 +208,101 @@ trigger_all() {
     trigger_sudo_failure
 }
 
+# ---- Simulated trigger functions (for multi-node) ----
+
+trigger_simulated_ssh_bruteforce() {
+    local log_file="$1"
+    local attempts="$2"
+    local log_dir
+    log_dir=$(dirname "$log_file")
+    mkdir -p "$log_dir"
+
+    echo "🔑 模拟 SSH 登录失败 ($attempts 次) -> $log_file"
+    echo ""
+
+    local users=('root' 'admin' 'deploy' 'oracle' 'postgres' 'test' 'guest' 'ubuntu')
+    local hostname_str
+    hostname_str=$(hostname)
+
+    for i in $(seq 1 "$attempts"); do
+        idx=$(( (i - 1) % ${#users[@]} ))
+        user="${users[$idx]}"
+        src_ip="10.0.99.1"
+        src_port="$((RANDOM % 60000 + 1024))"
+        pid="$((RANDOM % 50000 + 1000))"
+        ts="$(date '+%b %d %H:%M:%S')"
+        echo "$ts $hostname_str sshd[$pid]: Failed password for $user from $src_ip port $src_port ssh2" >> "$log_file"
+        echo "  [$i/$attempts] $user@$src_ip:$src_port (simulated)"
+        sleep 0.3
+    done
+
+    echo ""
+    echo "  ✅ SSH 模拟完成 ($(wc -l < "$log_file") 行总计)"
+    echo ""
+}
+
+trigger_simulated_sudo_failure() {
+    local log_file="$1"
+    local attempts="$2"
+    local log_dir
+    log_dir=$(dirname "$log_file")
+    mkdir -p "$log_dir"
+
+    echo "🔐 模拟错误 sudo 尝试 ($attempts 次) -> $log_file"
+    echo ""
+
+    local hostname_str
+    hostname_str=$(hostname)
+
+    for i in $(seq 1 "$attempts"); do
+        local ts
+        ts="$(date '+%b %d %H:%M:%S')"
+        echo "$ts $hostname_str sudo[$(($RANDOM % 50000 + 1000))]: pam_unix(sudo:auth): authentication failure; logname= uid=0 euid=0 tty=/dev/pts/0 ruser= rhost=  user=admin" >> "$log_file"
+        echo "  [$i/$attempts] sudo auth failure (simulated)"
+        sleep 0.2
+    done
+
+    echo ""
+    echo "  ✅ Sudo 模拟完成 ($(wc -l < "$log_file") 行总计)"
+    echo ""
+}
+
 # ---- 主流程 ----
+if [ -n "$NODE_ID" ]; then
+    echo -e "  ${YELLOW}模拟模式: $SIMULATED_LOG${NC}"
+    echo ""
+
+    case $MODE in
+        ssh|bruteforce)
+            trigger_simulated_ssh_bruteforce "$SIMULATED_LOG" "$ATTEMPTS"
+            ;;
+        sudo)
+            trigger_simulated_sudo_failure "$SIMULATED_LOG" "$ATTEMPTS"
+            ;;
+        all)
+            trigger_simulated_ssh_bruteforce "$SIMULATED_LOG" "$ATTEMPTS"
+            echo ""
+            echo "================================================"
+            echo ""
+            trigger_simulated_sudo_failure "$SIMULATED_LOG" "$ATTEMPTS"
+            ;;
+        *)
+            echo "用法: bash scripts/trigger_authlog.sh [--node-id NODE_ID] [ssh|sudo|all] [次数]"
+            exit 1
+            ;;
+    esac
+
+    echo ""
+    echo "================================================"
+    echo "  ✅ 模拟事件已注入"
+    echo "  Node:  $NODE_ID"
+    echo "  File:  $SIMULATED_LOG"
+    echo "================================================"
+    echo ""
+    echo "  ⏳ DetectionEngine 将在数秒内检测到并发布信号"
+    exit 0
+fi
+
 check_prereqs
 
 case $MODE in

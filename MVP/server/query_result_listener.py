@@ -5,7 +5,8 @@
 职责：
   1. 监听 NATS 上边缘返回的查询结果
   2. 将证据持久化到本地 outputs 目录
-  3. 记录接收统计
+  3. 触发自动研判流水线: 数据就绪度 → Agent Team → 复核 → 报告
+  4. 记录接收统计
 
 对应实现方案：第四章 - 边缘按需查询（结果接收端）
 """
@@ -17,6 +18,7 @@ import json
 import os
 import sys
 import time
+import traceback
 from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -27,7 +29,7 @@ from common.monitor_events import MonitorEmitter
 
 
 class QueryResultListener:
-    """监听边缘返回的查询结果并持久化"""
+    """监听边缘返回的查询结果并持久化，触发自动研判流水线"""
 
     def __init__(self):
         self.nc = None
@@ -45,14 +47,17 @@ class QueryResultListener:
     async def handle_result(self, msg):
         async def _process():
             result = json.loads(msg.data.decode())
-            print(f"[ResultListener] 收到查询结果: {result.get('query_id')} "
-                  f"| 证据={result.get('evidence_count')} 条 "
+            query_id = result.get("query_id", "?")
+            node_id = result.get("node_id", "?")
+            evidence_count = result.get("evidence_count", 0)
+            print(f"[ResultListener] 收到查询结果: {query_id} "
+                  f"| 证据={evidence_count} 条 "
                   f"| 耗时={result.get('execution_time_ms')}ms "
-                  f"| 节点={result.get('node_id')}")
+                  f"| 节点={node_id}")
             if self.monitor:
-                await self.monitor.result_received(query_id=result.get("query_id"),
-                                                   node_id=result.get("node_id"),
-                                                   evidence_count=result.get("evidence_count", 0))
+                await self.monitor.result_received(query_id=query_id,
+                                                   node_id=node_id,
+                                                   evidence_count=evidence_count)
 
             # OCSF 标准化映射
             from common.ocsf_mapper import map_authlog_to_ocsf
@@ -63,7 +68,7 @@ class QueryResultListener:
 
             # 持久化证据到本地 outputs 目录
             timestamp = time.strftime("%Y%m%d_%H%M%S")
-            output_dir = os.path.join(OUTPUTS_DIR, f"nats_{timestamp}")
+            output_dir = os.path.join(OUTPUTS_DIR, timestamp)
             os.makedirs(output_dir, exist_ok=True)
             evidence_path = os.path.join(output_dir, "evidence.json")
             with open(evidence_path, "w", encoding="utf-8") as f:
@@ -82,9 +87,13 @@ class QueryResultListener:
                     print(f"[ResultListener] OpenSearch 索引失败 (best-effort): {e}")
 
             if self.monitor:
-                await self.monitor.evidence_saved(query_id=result.get("query_id"),
-                                                  evidence_count=result.get("evidence_count", 0),
+                await self.monitor.evidence_saved(query_id=query_id,
+                                                  evidence_count=evidence_count,
                                                   path=evidence_path)
+
+            # 触发异步研判流水线（不阻塞 ACK）
+            if evidence_list:
+                asyncio.create_task(self._run_analysis_pipeline(evidence_list, timestamp, node_id))
 
         acked = await safe_ack(msg, on_success=_process)
         if acked:
@@ -94,11 +103,104 @@ class QueryResultListener:
             attempts = getattr(md, 'num_delivered', 1) if md else 1
             print(f"[ResultListener] 处理失败，重试中 ({attempts}/{MAX_DELIVERY_ATTEMPTS})")
 
+    async def _run_analysis_pipeline(
+        self,
+        evidence: list,
+        timestamp: str,
+        node_id: str,
+    ):
+        """
+        自动研判流水线: 数据就绪度 → Agent Team → 复核 → 报告
+        以异步后台任务运行，不阻塞主消息循环。
+        """
+        print(f"\n{'='*50}")
+        print(f"[Pipeline] 自动研判流水线启动 | 节点={node_id} | 证据={len(evidence)}条")
+        print(f"{'='*50}")
+
+        output_dir = os.path.join(OUTPUTS_DIR, timestamp)
+
+        # ---- Step 1: 数据就绪度检查 ----
+        print(f"\n[Pipeline:Step 1] 数据质量门控 (Readiness)...")
+        try:
+            from .readiness import calculate_readiness
+            readiness = calculate_readiness(timestamp=timestamp)
+            print(f"   ✅ 就绪度: {readiness.get('score')}分 ({readiness.get('level')})")
+        except Exception as e:
+            print(f"   ⚠️ 就绪度检查失败: {e}")
+            readiness = {"score": 0, "level": "严重不足"}
+
+        # ---- Step 2: Agent Team 多Agent研判 ----
+        print(f"\n[Pipeline:Step 2] Agent Team 多Agent研判...")
+        try:
+            from .agent_team import run_analysis
+            draft = run_analysis(evidence, timestamp)
+            print(f"   ✅ 分诊: {draft['triage']['event_type']} (优先级: {draft['triage']['priority']})")
+
+            # 构建 agent_result.json（格式兼容 verifier / report_generator）
+            agent_result = {
+                "summary": draft["triage"]["summary"],
+                "timeline": [],
+                "conclusion": (
+                    f"{draft['triage']['summary']}"
+                    f"攻击链状态: {draft.get('attack_chain', {}).get('progress', '未分析')}"
+                ),
+                "confidence": draft["triage"]["confidence"],
+                "actions": draft["suggested_actions"],
+                "evidence_ref": draft["evidence_ref"],
+                "event_type": draft["triage"]["event_type"],
+                "priority": draft["triage"]["priority"],
+                "node_id": node_id,
+            }
+            with open(os.path.join(output_dir, "agent_result.json"), "w", encoding="utf-8") as f:
+                json.dump(agent_result, f, indent=2, ensure_ascii=False)
+            print(f"   📄 agent_result.json 已保存")
+        except Exception as e:
+            print(f"   ⚠️ Agent Team 研判失败: {e}")
+            traceback.print_exc()
+            agent_result = {
+                "summary": f"研判异常: {e}",
+                "conclusion": "自动研判失败，需人工介入",
+                "confidence": "低",
+                "actions": ["人工核查"],
+                "evidence_ref": [],
+                "event_type": "unknown",
+                "priority": "medium",
+            }
+
+        # ---- Step 3: 复核校验 (防AI幻觉) ----
+        print(f"\n[Pipeline:Step 3] 复核校验 (Verifier)...")
+        try:
+            from .verifier import verify
+            verifier_result = verify(timestamp=timestamp)
+            verified = verifier_result.get("verified", False)
+            print(f"   {'✅ 复核通过' if verified else '⚠️ 复核未通过'}")
+            if verifier_result.get("issues"):
+                for issue in verifier_result["issues"]:
+                    print(f"      - {issue}")
+        except Exception as e:
+            print(f"   ⚠️ 复核校验失败: {e}")
+            traceback.print_exc()
+
+        # ---- Step 4: 生成研判报告 ----
+        print(f"\n[Pipeline:Step 4] 研判报告生成...")
+        try:
+            from .report_generator import generate_report
+            generate_report(timestamp=timestamp)
+        except Exception as e:
+            print(f"   ⚠️ 报告生成失败: {e}")
+            traceback.print_exc()
+
+        print(f"\n{'='*50}")
+        print(f"[Pipeline] 自动研判流水线完成 | 节点={node_id}")
+        print(f"   📂 输出目录: {output_dir}")
+        print(f"{'='*50}\n")
+
     async def listen_forever(self):
         await self.connect()
         await ensure_stream(self.js, "QUERY_RESULTS", [NATS_QUERY_RESULTS])
         sub = await subscribe_safe(self.js, NATS_QUERY_RESULTS, "query-result-listener", stream_names=["QUERY_RESULTS"])
         print(f"[ResultListener] 开始监听查询结果: {NATS_QUERY_RESULTS}")
+        print(f"[ResultListener] 自动研判流水线已启用 (Agent Team → Verifier → Report)")
 
         async for msg in sub.messages:
             await self.handle_result(msg)

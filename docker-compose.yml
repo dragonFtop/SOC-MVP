@@ -1,19 +1,16 @@
 services:
-  # 1. OpenSearch 3.5.0 可能会改为2.19版本
+  # ────────────── 基础设施 ──────────────
+
+  # 1. OpenSearch
   opensearch:
     image: opensearchproject/opensearch:3.5.0
     container_name: opensearch
     environment:
       - discovery.type=single-node
-      - OPENSEARCH_JAVA_OPTS=-Xms4G -Xmx4G
+      - OPENSEARCH_JAVA_OPTS=-Xms1G -Xmx1G
       - plugins.security.disabled=true
       - node.store.allow_mmap=false
       - DISABLE_INSTALL_DEMO_CONFIG=true
-      - bootstrap.memory_lock=true
-    ulimits:
-      memlock:
-        soft: -1
-        hard: -1
     ports:
       - "9200:9200"
     restart: unless-stopped
@@ -47,7 +44,69 @@ services:
     networks:
       - aisoc-net
 
+  # ────────────── AI-SOC 应用服务 ──────────────
+
+  # 4. Server (中心侧) — 包含 Web Console
+  soc-server:
+    build: .
+    container_name: soc-server
+    environment:
+      - LLM_PROVIDER=${LLM_PROVIDER:-deepseek}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - DEEPSEEK_BASE_URL=${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      - ANTHROPIC_AUTH_TOKEN=${ANTHROPIC_AUTH_TOKEN:-}
+      - NATS_SERVERS=${NATS_SERVERS:-nats://nats:4222}
+      - OPENSEARCH_HOST=${OPENSEARCH_HOST:-opensearch}
+      - OPENSEARCH_PORT=${OPENSEARCH_PORT:-9200}
+      - OPENSEARCH_USER=${OPENSEARCH_USER:-admin}
+      - OPENSEARCH_PASS=${OPENSEARCH_PASS:-admin}
+      - WEB_CONSOLE_PASSWORD=${WEB_CONSOLE_PASSWORD:-}
+    ports:
+      - "8000:8000"
+      - "8500:8500"
+    depends_on:
+      - opensearch
+      - nats
+    restart: unless-stopped
+    networks:
+      - aisoc-net
+    entrypoint: ["bash", "scripts/docker-entrypoint-server.sh"]
+
+  # 5. Client (边缘侧) — 可启动多个实例
+  soc-client-gateway:
+    build: .
+    container_name: soc-client-gateway
+    environment:
+      - CLIENT_ID=gateway-guard
+      - LLM_PROVIDER=${LLM_PROVIDER:-deepseek}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - NATS_SERVERS=${NATS_SERVERS:-nats://nats:4222}
+    depends_on:
+      - nats
+      - soc-server
+    restart: unless-stopped
+    networks:
+      - aisoc-net
+    entrypoint: ["bash", "scripts/docker-entrypoint-client.sh"]
+    # 使用 profiles 让 client 默认不启动 (按需启动):
+    profiles: ["full"]
+
+  soc-client-db:
+    build: .
+    container_name: soc-client-db
+    environment:
+      - CLIENT_ID=db-sentinel
+      - LLM_PROVIDER=${LLM_PROVIDER:-deepseek}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - NATS_SERVERS=${NATS_SERVERS:-nats://nats:4222}
+    depends_on:
+      - nats
+      - soc-server
+    restart: unless-stopped
+    networks:
+      - aisoc-net
+    entrypoint: ["bash", "scripts/docker-entrypoint-client.sh"]
+    profiles: ["full"]
+
 networks:
   aisoc-net:
-
-

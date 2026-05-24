@@ -4,6 +4,9 @@
 # 用法: bash scripts/run_client.sh
 
 set -e
+export PYTHONUNBUFFERED=1
+
+CLIENT_ID="${1:?用法: bash scripts/run_client.sh <client-id>}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR/.."
@@ -11,6 +14,7 @@ cd "$SCRIPT_DIR/.."
 echo "================================================"
 echo "  AI-SOC Client - 边缘侧本地安全检测"
 echo "  启动时间: $(date '+%Y-%m-%d %H:%M:%S')"
+echo "  Client ID: $CLIENT_ID"
 echo "================================================"
 echo ""
 
@@ -30,42 +34,23 @@ check_nats() {
 
 check_nats
 
-# ---- 2. 检查数据源 ----
-check_data() {
-    echo "📂 检查数据源..."
-    AUTH_LOG="/var/log/auth.log"
-    if [ -f "$AUTH_LOG" ]; then
-        if [ -r "$AUTH_LOG" ]; then
-            echo "   ✅ auth.log 存在且可读"
-            echo "   最近条目:"
-            tail -3 "$AUTH_LOG" 2>/dev/null | sed 's/^/     /' || true
-        else
-            echo "   ⚠️ auth.log 无读取权限，尝试修复..."
-            sudo chmod o+r "$AUTH_LOG" 2>/dev/null || true
-            if [ -r "$AUTH_LOG" ]; then
-                echo "   ✅ 权限已修复"
-            else
-                echo "   ❌ 权限修复失败，请手动执行: sudo chmod o+r $AUTH_LOG"
-            fi
-        fi
-    else
-        echo "   ⚠️ auth.log 不存在: $AUTH_LOG"
-        echo "   -> 检测引擎将等待文件出现"
-    fi
-    echo ""
-}
-
-check_data
+# ---- 2. 检查配置文件 ----
+echo "📂 检查客户端配置..."
+CONFIG_FILE="MVP/client_config.yaml"
+if [ -f "$CONFIG_FILE" ]; then
+    echo "   ✅ $CONFIG_FILE 存在"
+else
+    echo "   ⚠️ $CONFIG_FILE 不存在"
+    echo "   -> 运行: bash scripts/register_client.sh add $CLIENT_ID --node-id <节点ID>"
+    exit 1
+fi
+echo ""
 
 # ---- 3. 启动客户端 Python 应用 ----
 echo "🖥️ 启动边缘侧核心组件..."
-echo ""
-echo "即将启动:"
-echo "  - Detection Engine      -> 监控 $AUTH_LOG (YAML rules)"
-echo "  - DuckDB Sidecar        -> 监听 soc.query.requests"
 echo ""
 echo "服务端应在另一个终端窗口中运行 (bash scripts/run_server.sh)"
 echo "================================================"
 echo ""
 
-python3 MVP/client/client_app.py
+python3 MVP/client/client_app.py --client-id "$CLIENT_ID"

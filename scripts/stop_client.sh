@@ -6,29 +6,14 @@ echo "🛑 AI-SOC Client 停止中..."
 
 STOPPED=0
 
-# 停止 client_app.py (整合入口)
-if pkill -f "client_app.py" 2>/dev/null; then
-    echo "   ✅ Client App 已停止"
-    STOPPED=1
-fi
-
-# 停止 DuckDB Sidecar
-if pkill -f "duckdb_sidecar.py" 2>/dev/null; then
-    echo "   ✅ DuckDB Sidecar 已停止"
-    STOPPED=1
-fi
-
-# 停止 Signal Generator (独立进程)
-if pkill -f "signal_generator.py" 2>/dev/null; then
-    echo "   ✅ Signal Generator 已停止"
-    STOPPED=1
-fi
-
-# 停止 sidecar 相关的 NATS 连接
-if pkill -f "sidecar-" 2>/dev/null; then
-    echo "   ✅ Sidecar NATS 连接已清理"
-    STOPPED=1
-fi
+# 按进程树清理所有 client 相关进程
+for pattern in "client_app.py" "duckdb_sidecar.py" "signal_generator.py" \
+               "detection_engine.py"; do
+    if pkill -f "$pattern" 2>/dev/null; then
+        echo "   ✅ 已停止: $pattern"
+        STOPPED=1
+    fi
+done
 
 if [ "$STOPPED" -eq 0 ]; then
     echo "   ⏭️ 没有运行中的客户端进程"

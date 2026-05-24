@@ -5,5 +5,7 @@ __pycache__/
 MVP/client/signals_fallback.json
 MVP/outputs/
 wazuh_logs/
+simulated_nodes/
+!simulated_nodes/.gitkeep
 
 .env

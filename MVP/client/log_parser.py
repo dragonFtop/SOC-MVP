@@ -39,10 +39,12 @@ _SSHD_PREAUTH = re.compile(
 _SUDO_PAM_FAILURE = re.compile(
     r"authentication failure"
 )
+# Extract user from pam_unix message: "user=admin" at the end
+_SUDO_PAM_USER = re.compile(r"user=(\S+)")
 _SUDO_TTY = re.compile(
     r"TTY=(\S+).*USER=(\S+).*COMMAND=(.*)"
 )
-_SU_FAILED = re.compile(r"FAILED SU")
+_SU_FAILED = re.compile(r"FAILED SU \(to (\S+)\)")
 _SU_SUCCESS = re.compile(r"\(to (\S+)\) (\S+) on")
 
 
@@ -160,6 +162,10 @@ def parse_line(line: str) -> Optional[Dict]:
     # ---- sudo messages ----
     if process == "sudo":
         if _SUDO_PAM_FAILURE.search(message):
+            # Extract target user from pam_unix "user=xxx" field
+            um = _SUDO_PAM_USER.search(message)
+            if um:
+                result["dst_user"] = um.group(1)
             result["log_type"] = "sudo_auth_failure"
             return result
         m2 = _SUDO_TTY.search(message)
@@ -172,7 +178,9 @@ def parse_line(line: str) -> Optional[Dict]:
 
     # ---- su messages ----
     if process == "su":
-        if _SU_FAILED.search(message):
+        m2 = _SU_FAILED.search(message)
+        if m2:
+            result["dst_user"] = m2.group(1)  # Extract user from "FAILED SU (to root)"
             result["log_type"] = "su_failed"
             return result
         m2 = _SU_SUCCESS.search(message)

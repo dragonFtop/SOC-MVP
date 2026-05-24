@@ -286,7 +286,7 @@ if __name__ == "__main__":
             ts = f.read().strip()
         calculate_readiness(timestamp=ts)
     except FileNotFoundError:
-        print("⚠️ 未找到时间戳文件，请先运行 evidence_builder.py")
+        print("⚠️ 未找到时间戳文件，请先运行 detection pipeline")
         # 使用测试数据
         test_evidence = [
             {"evidence_id": "ev-001", "timestamp": "2026-05-14T12:00:00Z", "source": "wazuh", "src_ip": "10.0.0.1", "rule_id": "5503", "description": "SSH登录失败", "severity": 5},

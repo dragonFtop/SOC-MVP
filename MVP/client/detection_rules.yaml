@@ -20,7 +20,7 @@ rules:
       count: 5
       window_seconds: 300
       group_by: src_ip
-    cooldown_seconds: 600
+    cooldown_seconds: 30
     signal:
       priority: 5
       event_type: "brute_force"
@@ -40,7 +40,7 @@ rules:
       count: 3
       window_seconds: 120
       group_by: src_ip
-    cooldown_seconds: 600
+    cooldown_seconds: 30
     signal:
       priority: 4
       event_type: "reconnaissance"
@@ -59,7 +59,7 @@ rules:
       count: 3
       window_seconds: 120
       group_by: dst_user
-    cooldown_seconds: 600
+    cooldown_seconds: 30
     signal:
       priority: 4
       event_type: "privilege_escalation"
@@ -78,7 +78,7 @@ rules:
       count: 3
       window_seconds: 120
       group_by: dst_user
-    cooldown_seconds: 600
+    cooldown_seconds: 30
     signal:
       priority: 4
       event_type: "privilege_escalation"
