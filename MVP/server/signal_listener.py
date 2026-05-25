@@ -94,7 +94,7 @@ class SignalListener:
                 # Build auth_log-specific filters for the DetectionEngine
                 filters = {}
                 src_ip = signal.get("src_ip")
-                if src_ip:
+                if src_ip and src_ip != "0.0.0.0":
                     filters["src_ip"] = src_ip
                 detection_rule_id = signal.get("detection_rule_id", "")
                 if "SSH" in detection_rule_id:

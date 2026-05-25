@@ -46,6 +46,22 @@ async def run_server():
     server_log(f"NATS 服务器: {NATS_SERVERS}")
     server_log("")
 
+    # 0. 启动 OpenSearch Dashboards (Docker)
+    def _launch_dashboards():
+        import subprocess
+        try:
+            subprocess.run(
+                ["docker", "compose", "up", "-d", "dashboards"],
+                cwd=os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=30,
+            )
+            server_log("OpenSearch Dashboards 启动中 -> http://localhost:5601")
+        except Exception as e:
+            server_log(f"⚠️ Dashboards 启动失败: {e}")
+
+    _launch_dashboards()
+
     # 1. Query Gateway (独立线程)
     gateway_thread = threading.Thread(target=run_gateway, daemon=True)
     gateway_thread.start()
@@ -80,6 +96,7 @@ async def run_server():
 
     server_log("")
     server_log("所有服务已启动:")
+    server_log("  - OpenSearch Dashboards: http://localhost:5601")
     server_log("  - Query Gateway:   http://localhost:8000")
     server_log("  - Web Console:     http://localhost:8500")
     server_log("  - Signal Listener: 监听 NATS 信号")

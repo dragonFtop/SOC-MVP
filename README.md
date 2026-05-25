@@ -18,7 +18,10 @@ AI-SOC (Artificial Intelligence Security Operations Center) 是一个基于**数
 │         │                                                   │
 └─────────┼───────────────────────────────────────────────────┘
           │
-   NATS (JetStream + Core)
+   NATS JetStream (3个 Stream)
+   ├── SIGNALS: soc.signals.*
+   ├── QUERY_REQUESTS: soc.query.requests
+   └── QUERY_RESULTS: soc.query.results
           │
 ┌─────────┼───────────────────────────────────────────────────┐
 │                    终端 1: Server (中心侧)                    │
@@ -27,33 +30,43 @@ AI-SOC (Artificial Intelligence Security Operations Center) 是一个基于**数
 │         │                                                   │
 │  Query Gateway (FastAPI :8000)                              │
 │         │                                                   │
-│  Agent Team (LLM 多Agent研判)                                │
-│         │                                                   │
-│  Verifier (复核校验)                                         │
+│  Query Result Listener (结果接收 + 自动研判流水线)             │
 │         │                                                   │
 │  Web Console (Streamlit :8500)  ← 统一运维面板               │
 │                                                             │
-│  存储层: OpenSearch + DuckDB                                 │
+│  存储层: OpenSearch (6个索引) + DuckDB (内存)                 │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### 实时数据流
+### NATS 数据流
 
 ```
-系统写入 auth.log
-  → DetectionEngine tail + 解析 (每2秒轮询)
-  → DuckDB 内存表写入 → YAML 规则 SQL threshold 检测
-  → 生成轻量级微信号 → NATS soc.signals.<node_id>
-  → Server Signal Listener 接收 (过期信号自动跳过)
-  → 触发按需查询 → NATS soc.query.requests
-  → Client DuckDB Sidecar 查询 auth_events 内存表 → 只返回关键证据
-  → NATS soc.query.results
-  → Server 接收 → OCSF 标准化 → Agent Team 研判 → 复核 → 报告
-
-全链路监控:
-  → MonitorEmitter → NATS soc.monitor.events (Core Pub/Sub)
-  → Web Console Server监控 页面实时展示
+auth.log → DetectionEngine → 信号 → soc.signals.* → SignalListener
+  (tail+解析+YAML检测)        (PUBLISH)  Stream:      (SUBSCRIBE)
+                                          SIGNALS           │
+                                                            ▼
+DuckDB Sidecar ←── soc.query.requests ←────────────── 构建查询请求
+(SUBSCRIBE)         Stream: QUERY_REQUESTS              (PUBLISH)
+  │
+  ▼
+query_events() → 证据构建
+  │
+  ▼
+DuckDB Sidecar ──→ soc.query.results ──→ QueryResultListener
+(PUBLISH)           Stream:               (SUBSCRIBE)
+                    QUERY_RESULTS              │
+                                               ▼
+                                          evidence.json
+                                          OpenSearch 索引
+                                          研判流水线 (5步):
+                                          ① 数据就绪度
+                                          ② Agent Team 研判
+                                          ③ 复核校验
+                                          ④ 报告生成
+                                          ⑤ OpenSearch 索引
 ```
+
+**重复告警防护**：DetectionEngine 按规则追踪已告警的最大事件 ID（`_last_signaled_max_id`），同一批事件不会重复触发告警。
 
 ## 快速开始
 
@@ -112,10 +125,10 @@ bash scripts/run_server.sh
 ```
 
 该脚本会自动：
-- 检查并启动 Docker 基础设施（OpenSearch、NATS）
+- 检查并启动 Docker 基础设施（OpenSearch、NATS、**OpenSearch Dashboards**）
 - 启动 Query Gateway（FastAPI，端口 8000）
 - 启动 Signal Listener（监听 NATS 信令 soc.signals.*）
-- 启动 Query Result Listener（监听查询结果，自动触发研判流水线）
+- 启动 Query Result Listener（监听查询结果，自动触发研判流水线 + OpenSearch 索引）
 - 启动 Web Console（Streamlit 统一运维面板，端口 8500）
 
 **终端 2+ — 启动客户端：**
@@ -135,7 +148,6 @@ bash scripts/run_client.sh db-sentinel
 
 ```bash
 bash scripts/trigger_authlog.sh --node-id node-web-01 ssh 6
-bash scripts/trigger_authlog.sh ssh 6 --node-id node-web-01  # 任意顺序均可
 ```
 
 ### 6. 访问 Web Console
@@ -166,7 +178,7 @@ bash scripts/stop_client.sh    # 停止所有客户端
 ## Docker 一键部署
 
 ```bash
-# 基础设施 + Server + Web Console
+# 基础设施 + Server + Web Console + Dashboards
 docker compose up -d
 
 # 全栈（含 2 个 Client）
@@ -187,6 +199,39 @@ Docker Compose 会从 `.env` 文件自动加载 API Key 等环境变量。
 | OpenSearch | `http://localhost:9200` |
 | OpenSearch Dashboards | `http://localhost:5601` |
 | NATS Monitoring | `http://localhost:8222` |
+
+## OpenSearch 索引
+
+系统自动创建 6 个索引，全部通过 NATS 数据流自动写入：
+
+| 索引 | 写入时机 | 内容 | 时间字段 |
+|------|---------|------|---------|
+| `soc-signals` | SignalListener 收到信号 | 检测信号 (signal_id, rule_id, src_ip, ...) | `event_time` (ISO) |
+| `soc-evidence` | QueryResultListener 收到证据 | 证据记录 (timestamp, rule_id, src_ip, raw_log, ...) | `timestamp` (ISO) |
+| `soc-readiness` | 研判流水线 Step 5 | 数据就绪度评分 (score, level, checks, ...) | `@timestamp` (ISO) |
+| `soc-analysis` | 研判流水线 Step 5 | Agent Team 研判结论 (summary, confidence, actions, ...) | `@timestamp` (ISO) |
+| `soc-verification` | 研判流水线 Step 5 | 复核校验结果 (verified, issues, checks, ...) | `@timestamp` (ISO) |
+| `soc-reports` | 研判流水线 Step 5 | 研判报告全文 (content, node_id, ...) | `@timestamp` (ISO) |
+
+在 OpenSearch Dashboards (`http://localhost:5601`) 中创建 Index Pattern 即可可视化查询所有数据。
+
+## NATS 管理
+
+```bash
+# 查看 Stream 状态
+python3 scripts/nats_mgmt.py list
+
+# 清空所有 Stream 消息
+python3 scripts/nats_mgmt.py purge
+
+# 只清空某个 Stream
+python3 scripts/nats_mgmt.py purge SIGNALS
+
+# 删除所有 Stream（下次启动自动重建）
+python3 scripts/nats_mgmt.py rm
+```
+
+三个 Stream 均有 24 小时 / 500MB 的自动清理策略，正常情况下无需手动干预。
 
 ## 多客户端架构
 
@@ -229,8 +274,9 @@ SOC/
 │   ├── stop_client.sh              # 停止所有客户端
 │   ├── register_client.sh          # Client 注册管理 (add/remove/list)
 │   ├── init_node.sh                # 初始化模拟节点目录
-│   ├── trigger_authlog.sh          # 触发安全事件 (支持 --node-id 任意位置)
+│   ├── trigger_authlog.sh          # 触发安全事件
 │   ├── trigger_test.sh             # 注入模拟告警 (兼容旧模式)
+│   ├── nats_mgmt.py                # NATS Stream 管理工具 (list/purge/rm)
 │   ├── docker-entrypoint-server.sh # Docker Server 入口
 │   └── docker-entrypoint-client.sh # Docker Client 入口
 │
@@ -244,19 +290,20 @@ SOC/
 │   ├── client_config.yaml          # Client 注册配置
 │   ├── test_scenarios.yaml         # 安全测试场景配置
 │   ├── metadata.json               # 数据源注册表
+│   ├── mapping.json                # OpenSearch soc-evidence 索引映射
 │   │
 │   ├── client/                     # 边缘侧模块
 │   │   ├── client_app.py           # 客户端统一入口 (--client-id <id>)
-│   │   ├── detection_engine.py     # 本地检测引擎 (规则热加载)
+│   │   ├── detection_engine.py     # 本地检测引擎 (规则热加载 + 重复告警防护)
 │   │   ├── detection_rules.yaml    # YAML 检测规则
 │   │   ├── log_parser.py           # auth.log syslog 解析器
 │   │   ├── duckdb_sidecar.py       # DuckDB 边缘查询引擎
 │   │   └── __init__.py
 │   │
 │   ├── server/                     # 中心侧模块
-│   │   ├── server_app.py           # 服务端统一入口
-│   │   ├── signal_listener.py      # NATS 信令监听 (过期信号过滤)
-│   │   ├── query_result_listener.py # NATS 查询结果监听 + 研判流水线
+│   │   ├── server_app.py           # 服务端统一入口 (含 Dashboards 自动启动)
+│   │   ├── signal_listener.py      # NATS 信令监听
+│   │   ├── query_result_listener.py # NATS 查询结果监听 + 研判流水线 + OS索引
 │   │   ├── query_gateway.py        # FastAPI 查询网关
 │   │   ├── agent_team.py           # 多Agent LLM 研判 (DeepSeek/Anthropic)
 │   │   ├── readiness.py            # 数据质量门控
@@ -286,11 +333,11 @@ SOC/
 │   │
 │   └── outputs/                    # 分析结果 + 审计日志
 │       ├── audit.log               # 操作审计记录
-│       └── 20260524_181218/
+│       ├── client_db-sentinel.log  # Client 运行日志
+│       └── 20260525_184707/
 │           ├── evidence.json
 │           ├── readiness.json
 │           ├── agent_result.json
-│           ├── agent_draft.json
 │           ├── verifier_result.json
 │           └── report.md
 │
@@ -303,24 +350,33 @@ SOC/
 ## 研判流程
 
 ```
-Step 1-2: DetectionEngine tail auth.log
+Step 1: DetectionEngine tail auth.log
   → log_parser 解析 syslog 行
   → DuckDB 内存表 auth_events
   → YAML SQL threshold 检测
+  → 重复告警防护 (_last_signaled_max_id)
   → 信号 → NATS soc.signals.<node_id>
 
-Step 3-5: SignalListener 接收信号 (过期信号自动跳过)
+Step 2: SignalListener 接收信号
+  → 过期信号过滤 (>5分钟自动跳过)
+  → OpenSearch 信令索引 (soc-signals)
   → 查询请求 → NATS soc.query.requests
-  → DuckDB Sidecar 按需查询
-  → 轻量级证据 → NATS soc.query.results
-  → ocsf_mapper 字段标准化 (保留 raw_ref/lineage_id/query_id)
 
-Step 6-9: QueryResultListener 接收证据
-  → readiness 数据质量门控
-  → agent_team LLM 多Agent研判 (Triage → AttackChain → Report)
-  → verifier 5层复核校验 (防AI幻觉)
-  → report_generator Markdown 报告
-  → OpenSearch 持久化
+Step 3: DuckDB Sidecar 按需查询
+  → auth_log source → DetectionEngine.query_events()
+  → 轻量级证据构建 (evidence_id, lineage_id, hash)
+  → 结果返回 → NATS soc.query.results
+
+Step 4: QueryResultListener 接收证据
+  → OCSF 标准化 → 写入 evidence.json
+  → OpenSearch 证据索引 (soc-evidence)
+
+Step 5: 自动研判流水线
+  → ① readiness 数据质量门控
+  → ② agent_team LLM 多Agent研判 (Triage → AttackChain → Report)
+  → ③ verifier 复核校验 (防AI幻觉)
+  → ④ report_generator Markdown 报告
+  → ⑤ OpenSearch 索引 (soc-readiness / soc-analysis / soc-verification / soc-reports)
 ```
 
 ## Agent Team 研判
@@ -353,13 +409,15 @@ LLM 不可用时自动回退规则引擎。
 
 定义在 `MVP/client/detection_rules.yaml`，支持热加载：
 
-| 规则ID | 类型 | 描述 | 阈值 | 冷却 |
-|--------|------|------|------|------|
-| LOCAL_SSH_BRUTE_FORCE | brute_force | SSH 暴力破解 | 5次/5分钟, src_ip | 30s |
-| LOCAL_SSH_SCAN | reconnaissance | SSH 扫描检测 | 3次/2分钟, src_ip | 30s |
-| LOCAL_SUDO_FAILURES | privilege_escalation | Sudo 认证失败 | 3次/2分钟, dst_user | 30s |
-| LOCAL_SU_FAILURES | privilege_escalation | Su 认证失败 | 3次/2分钟, dst_user | 30s |
-| LOCAL_SSH_ACCEPTED | normal | SSH 成功登录 | 1次 | 0s |
+| 规则ID | 类型 | 描述 | 时间窗口 | 冷却 | 分组 |
+|--------|------|------|----------|------|------|
+| LOCAL_SSH_BRUTE_FORCE | brute_force | SSH 暴力破解 | 300s (5次) | 30s | src_ip |
+| LOCAL_SSH_SCAN | reconnaissance | SSH 扫描检测 | 120s (3次) | 30s | src_ip |
+| LOCAL_SUDO_FAILURES | privilege_escalation | Sudo 认证失败 | 120s (3次) | 30s | dst_user |
+| LOCAL_SU_FAILURES | privilege_escalation | Su 认证失败 | 120s (3次) | 30s | dst_user |
+| LOCAL_SSH_ACCEPTED | normal | SSH 成功登录 | 1s (1次) | 0s | — |
+
+**时间窗口 vs 冷却时间**：窗口决定"多久内的相关事件算同一波攻击"，冷却决定"告警后多久不再重复报告"。DetectionEngine 内置 `_last_signaled_max_id` 机制防止同一批事件重复触发，即使冷却短于窗口也不会产生重复证据。
 
 通过 Web Console → 📜 检测规则 在线编辑，保存后 2 秒内自动热加载生效，无需重启 Client。
 
@@ -406,12 +464,14 @@ WEB_CONSOLE_PASSWORD=
 | LLM API 调用失败 | 检查 `.env` 中 `DEEPSEEK_API_KEY` 是否正确 |
 | OpenSearch 连接失败 | `docker compose up -d opensearch` |
 | NATS 连接失败 | `docker compose up -d nats` |
-| Server 启动后不停产生数据 | NATS 积压旧信号：`docker compose down && docker compose up -d` 重置 |
-| 触发测试后无反应 | 确认 Client 在运行；同 IP 同规则有 30s cooldown |
-| 日志文件无换行 | 通过 Web Console 安全测试页面注入（已内置换行修复） |
+| NATS 消息积压 | `python3 scripts/nats_mgmt.py list` 查看，`purge` 清空 |
+| Server 启动后不停产生空证据 | 旧信号积压导致：`python3 scripts/nats_mgmt.py purge` 清空 Stream |
+| 触发测试后无反应 | 确认 Client 在运行；检查 NATS Stream 是否有积压旧信号 |
+| 同一批事件重复触发告警 | 检查 Client 是否重启过（内存 DuckDB 重置）；规则冷却是否过短 |
+| OpenSearch 索引无数据 | 确认 Server + Client 都在运行；检查 `_cat/indices` 确认索引存在 |
+| Dashboards 时间字段无法识别 | 确认索引中时间字段为 ISO 8601 格式（含时区如 +08:00） |
 | Client 未在列表 | `bash scripts/register_client.sh list` 或 Web Console Client注册页 |
 | Web Console 打不开 | 确认端口 8500 未被占用 |
-
 
 ## 许可证
 

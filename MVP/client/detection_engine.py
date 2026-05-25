@@ -65,6 +65,7 @@ class DetectionEngine:
         # State
         self.last_offset = 0
         self.cooldowns: Dict[str, float] = {}  # f"{rule_id}:{group_key}" -> expiry_ts
+        self._last_signaled_max_id: Dict[str, int] = {}  # rule_id -> max event id already signaled
         self.nc = None
         self.js = None
         self.monitor = None
@@ -250,6 +251,10 @@ class DetectionEngine:
               AND ({pattern_conditions})
               AND timestamp >= CURRENT_TIMESTAMP - INTERVAL '{window_seconds} seconds'
         """
+        # Exclude events already covered by a previous signal for this rule
+        last_id = self._last_signaled_max_id.get(rule["id"], 0)
+        if last_id > 0:
+            sql += f"  AND id > {last_id}\n"
         if group_by:
             sql += f"""
             GROUP BY {group_by}
@@ -363,6 +368,20 @@ class DetectionEngine:
             except Exception as e:
                 print(f"   ⚠️ Failed to publish signal: {e}")
                 self._stats["errors"] += 1
+
+        # After publishing, mark these events as handled so they won't re-trigger
+        if signals:
+            try:
+                max_id = self.con.execute(
+                    "SELECT COALESCE(MAX(id), 0) FROM auth_events"
+                ).fetchone()[0]
+                for signal in signals:
+                    rule_id = signal["detection_rule_id"]
+                    self._last_signaled_max_id[rule_id] = max(
+                        max_id, self._last_signaled_max_id.get(rule_id, 0)
+                    )
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Cleanup
@@ -500,6 +519,7 @@ class DetectionEngine:
                         self.rules = self._load_rules()
                         self._rules_mtime = mtime
                         self.cooldowns.clear()
+                        self._last_signaled_max_id.clear()
                         print(f"   🔄 [DetectionEngine] Rules reloaded ({len(self.rules)} rules), cooldowns cleared")
 
                 # 6. Periodic cleanup

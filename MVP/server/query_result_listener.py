@@ -190,6 +190,41 @@ class QueryResultListener:
             print(f"   ⚠️ 报告生成失败: {e}")
             traceback.print_exc()
 
+        # ---- Step 5: 索引入 OpenSearch ----
+        print(f"\n[Pipeline:Step 5] OpenSearch 索引...")
+        try:
+            # 将目录名 "20260525_184707" 转为 ISO "2026-05-25T18:47:07+08:00"
+            from datetime import datetime, timezone as dt_timezone, timedelta
+            ts_dt = datetime.strptime(timestamp, "%Y%m%d_%H%M%S")
+            local_offset = datetime.now().astimezone().strftime('%z')
+            # '+0800' → '+08:00'
+            offset_str = f"{local_offset[:3]}:{local_offset[3:]}"
+            iso_ts = ts_dt.isoformat() + offset_str
+            from .opensearch_loader import OpenSearchClient
+            os_client = OpenSearchClient()
+            for filename, index_name in [
+                ("readiness.json", "soc-readiness"),
+                ("agent_result.json", "soc-analysis"),
+                ("verifier_result.json", "soc-verification"),
+            ]:
+                filepath = os.path.join(output_dir, filename)
+                if os.path.exists(filepath):
+                    with open(filepath, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    if isinstance(data, dict):
+                        data["@timestamp"] = iso_ts
+                    os_client.index(index_name, data)
+                    print(f"   ✅ {index_name} 已索引")
+            # 报告文件
+            report_path = os.path.join(output_dir, "report.md")
+            if os.path.exists(report_path):
+                with open(report_path, "r", encoding="utf-8") as f:
+                    report_content = f.read()
+                os_client.index("soc-reports", {"content": report_content, "@timestamp": iso_ts, "node_id": node_id})
+                print(f"   ✅ soc-reports 已索引")
+        except Exception as e:
+            print(f"   ⚠️ OpenSearch 索引失败: {e}")
+
         print(f"\n{'='*50}")
         print(f"[Pipeline] 自动研判流水线完成 | 节点={node_id}")
         print(f"   📂 输出目录: {output_dir}")
